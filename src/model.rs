@@ -213,6 +213,7 @@ pub struct SlotInfo {
     pub speculative: bool,
     pub speculative_type: Option<String>,
     pub decode_tokens_per_sec: f32,
+    pub draft_acceptance_rate: Option<f32>,
 }
 
 /// Comprehensive LLM Engine and Inference Metrics
@@ -246,6 +247,12 @@ pub struct LlmMetrics {
     pub speculative_draft_quant: Option<String>,
     /// Speculative acceptance rate (0.0 to 100.0)
     pub speculative_acceptance_rate: Option<f32>,
+    /// MTP Draft tokens accepted
+    pub mtp_draft_accepted: u64,
+    /// MTP Draft tokens generated
+    pub mtp_draft_generated: u64,
+    /// Mean draft accepted length
+    pub mtp_mean_len: Option<f32>,
 
     /// Slot utilization
     pub total_slots: u32,
@@ -266,6 +273,7 @@ pub struct LlmMetrics {
     /// Real-time throughput metrics
     pub current_prefill_tps: f32,
     pub current_decode_tps: f32,
+    pub peak_decode_tps: f32,
 
     /// Latencies
     pub time_to_first_token_ms: Option<f32>,

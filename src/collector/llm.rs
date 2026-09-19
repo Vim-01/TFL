@@ -14,6 +14,7 @@ pub struct LlmCollector {
     slot_trackers: HashMap<u32, SlotTracker>,
     cached_proc_info: Option<ProcLlamaInfo>,
     last_proc_scan: Option<Instant>,
+    log_tailer: LlamaLogTailer,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -30,7 +31,152 @@ struct ProcLlamaInfo {
     model_draft_path: Option<String>,
     model_draft_name: Option<String>,
     model_draft_quant: Option<String>,
+    log_path: Option<String>,
     _flash_attention: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LlamaLogTailer {
+    pub log_path: Option<String>,
+    pub last_offset: u64,
+    pub last_mtp_rate: Option<f32>,
+    pub last_mtp_accepted: u64,
+    pub last_mtp_generated: u64,
+    pub last_mtp_mean_len: Option<f32>,
+    pub last_eval_tps: Option<f32>,
+    pub last_prompt_tps: Option<f32>,
+    pub peak_decode_tps: f32,
+}
+
+impl LlamaLogTailer {
+    pub fn update(&mut self, explicit_path: Option<&str>) {
+        let path_to_use = explicit_path
+            .map(|s| s.to_string())
+            .or_else(|| self.log_path.clone())
+            .or_else(|| {
+                if Path::new("/tmp/llama-server.log").exists() {
+                    Some("/tmp/llama-server.log".to_string())
+                } else {
+                    None
+                }
+            });
+
+        let Some(path_str) = path_to_use else {
+            return;
+        };
+
+        let path = Path::new(&path_str);
+        if !path.exists() {
+            return;
+        }
+
+        self.log_path = Some(path_str.clone());
+
+        if let Ok(mut file) = fs::File::open(&path_str) {
+            use std::io::{Read, Seek, SeekFrom};
+            if let Ok(metadata) = file.metadata() {
+                let file_len = metadata.len();
+                if self.last_offset == 0 && file_len > 32768 {
+                    // Start reading near tail on initial launch
+                    self.last_offset = file_len - 32768;
+                } else if file_len < self.last_offset {
+                    // Log truncated or rotated
+                    self.last_offset = 0;
+                }
+
+                let to_read = (file_len.saturating_sub(self.last_offset)).min(65536) as usize;
+                if to_read > 0 && file.seek(SeekFrom::Start(self.last_offset)).is_ok() {
+                    let mut buffer = vec![0_u8; to_read];
+                    if file.read_exact(&mut buffer).is_ok() {
+                        self.last_offset = self.last_offset.saturating_add(to_read as u64);
+                        let text = String::from_utf8_lossy(&buffer);
+                        for line in text.lines() {
+                            parse_llama_log_line(
+                                line,
+                                &mut self.last_mtp_rate,
+                                &mut self.last_mtp_accepted,
+                                &mut self.last_mtp_generated,
+                                &mut self.last_mtp_mean_len,
+                                &mut self.last_eval_tps,
+                                &mut self.last_prompt_tps,
+                            );
+                            if let Some(tps) = self.last_eval_tps {
+                                if tps > self.peak_decode_tps {
+                                    self.peak_decode_tps = tps;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn parse_llama_log_line(
+    line: &str,
+    mtp_rate: &mut Option<f32>,
+    mtp_accepted: &mut u64,
+    mtp_generated: &mut u64,
+    mtp_mean_len: &mut Option<f32>,
+    eval_tps: &mut Option<f32>,
+    prompt_tps: &mut Option<f32>,
+) {
+    if let Some(pos) = line.find("draft acceptance = ") {
+        // e.g. "draft acceptance = 0.54762 (   23 accepted /    42 generated), mean len =  2.64"
+        let rest = &line[pos + "draft acceptance = ".len()..];
+        let mut parts = rest.split_whitespace();
+        if let Some(rate_str) = parts.next() {
+            if let Ok(rate) = rate_str.parse::<f32>() {
+                *mtp_rate = Some(rate * 100.0);
+            }
+        }
+        if let Some(acc_idx) = rest.find('(') {
+            let inside = &rest[acc_idx + 1..];
+            if let Some(slash_idx) = inside.find("accepted /") {
+                let acc_str = inside[..slash_idx].trim();
+                if let Ok(acc) = acc_str.parse::<u64>() {
+                    *mtp_accepted = acc;
+                }
+                let gen_part = &inside[slash_idx + "accepted /".len()..];
+                if let Some(gen_end) = gen_part.find("generated)") {
+                    let gen_str = gen_part[..gen_end].trim();
+                    if let Ok(gen) = gen_str.parse::<u64>() {
+                        *mtp_generated = gen;
+                    }
+                }
+            }
+        }
+        if let Some(ml_idx) = rest.find("mean len =") {
+            let ml_part = &rest[ml_idx + "mean len =".len()..];
+            let ml_str = ml_part.split_whitespace().next().unwrap_or("");
+            if let Ok(ml) = ml_str.parse::<f32>() {
+                *mtp_mean_len = Some(ml);
+            }
+        }
+    } else if line.contains("prompt eval time = ") {
+        // e.g. "prompt eval time =    1089.15 ms /   227 tokens (    4.80 ms per token,   208.42 tokens per second)"
+        if let Some(tps_idx) = line.find("tokens per second)") {
+            let before = &line[..tps_idx];
+            if let Some(last_comma) = before.rfind(',') {
+                let num_str = before[last_comma + 1..].trim();
+                if let Ok(tps) = num_str.parse::<f32>() {
+                    *prompt_tps = Some(tps);
+                }
+            }
+        }
+    } else if line.contains("eval time = ") {
+        // e.g. "eval time =     635.08 ms /    37 tokens (   17.64 ms per token,    56.69 tokens per second)"
+        if let Some(tps_idx) = line.find("tokens per second)") {
+            let before = &line[..tps_idx];
+            if let Some(last_comma) = before.rfind(',') {
+                let num_str = before[last_comma + 1..].trim();
+                if let Ok(tps) = num_str.parse::<f32>() {
+                    *eval_tps = Some(tps);
+                }
+            }
+        }
+    }
 }
 
 // JSON schema for llama.cpp /props
@@ -129,6 +275,7 @@ impl LlmCollector {
             slot_trackers: HashMap::new(),
             cached_proc_info: None,
             last_proc_scan: None,
+            log_tailer: LlamaLogTailer::default(),
         }
     }
 
@@ -290,7 +437,17 @@ impl LlmCollector {
                 speculative: spec,
                 speculative_type: spec_type,
                 decode_tokens_per_sec: 0.0,
+                draft_acceptance_rate: None,
             });
+        }
+
+        // Update log tailer for speculative validation and exact throughput metrics
+        self.log_tailer.update(proc_info.log_path.as_deref());
+
+        for slot in &mut slot_infos {
+            if slot.speculative || slot.speculative_type.is_some() {
+                slot.draft_acceptance_rate = self.log_tailer.last_mtp_rate;
+            }
         }
 
         // Compute throughput speeds
@@ -301,6 +458,20 @@ impl LlmCollector {
         } else {
             (0.0, 0.0)
         };
+
+        let final_decode_tps = if current_decode_tps > 0.0 {
+            current_decode_tps
+        } else {
+            self.log_tailer.last_eval_tps.unwrap_or(0.0)
+        };
+
+        let final_prefill_tps = if current_prefill_tps > 0.0 {
+            current_prefill_tps
+        } else {
+            self.log_tailer.last_prompt_tps.unwrap_or(0.0)
+        };
+
+        let peak_decode_tps = self.log_tailer.peak_decode_tps.max(final_decode_tps);
 
         self.last_poll_instant = Some(now);
 
@@ -333,8 +504,10 @@ impl LlmCollector {
                 .or_else(|| proc_info.model_draft_name.clone()),
             speculative_draft_model: proc_info.model_draft_name,
             speculative_draft_quant: proc_info.model_draft_quant,
-            // Only report speculative acceptance rate when actually measured, never fabricate
-            speculative_acceptance_rate: None,
+            speculative_acceptance_rate: self.log_tailer.last_mtp_rate,
+            mtp_draft_accepted: self.log_tailer.last_mtp_accepted,
+            mtp_draft_generated: self.log_tailer.last_mtp_generated,
+            mtp_mean_len: self.log_tailer.last_mtp_mean_len,
             total_slots,
             active_slots,
             pending_requests: 0,
@@ -343,8 +516,9 @@ impl LlmCollector {
             context_tokens_used: total_context_tokens_used,
             context_window_max,
             cache_hit_rate_percent,
-            current_prefill_tps,
-            current_decode_tps,
+            current_prefill_tps: final_prefill_tps,
+            current_decode_tps: final_decode_tps,
+            peak_decode_tps,
             time_to_first_token_ms: None,
             inter_token_latency_ms: None,
             slots: slot_infos,
@@ -400,6 +574,25 @@ fn scan_proc_for_llama_flags() -> Option<ProcLlamaInfo> {
                     info._flash_attention = true;
                 }
                 i += 1;
+            }
+
+            // Check fd 1 and fd 2 for redirected log file
+            let fd1 = entry.path().join("fd/1");
+            if let Ok(target) = fs::read_link(&fd1) {
+                if target.is_file() {
+                    info.log_path = Some(target.to_string_lossy().to_string());
+                }
+            }
+            if info.log_path.is_none() {
+                let fd2 = entry.path().join("fd/2");
+                if let Ok(target) = fs::read_link(&fd2) {
+                    if target.is_file() {
+                        info.log_path = Some(target.to_string_lossy().to_string());
+                    }
+                }
+            }
+            if info.log_path.is_none() && Path::new("/tmp/llama-server.log").exists() {
+                info.log_path = Some("/tmp/llama-server.log".to_string());
             }
 
             return Some(info);
@@ -479,5 +672,30 @@ mod tests {
             Some("BF16".to_string())
         );
         assert_eq!(extract_quant_from_name("unquantized-model.bin"), None);
+    }
+
+    #[test]
+    fn test_parse_llama_log_line() {
+        let line1 = "599.52.846.524 I slot print_timing: id  0 | task 76084 | draft acceptance = 0.54762 (   23 accepted /    42 generated), mean len =  2.64";
+        let mut rate = None;
+        let mut acc = 0;
+        let mut gen = 0;
+        let mut mean_len = None;
+        let mut eval_tps = None;
+        let mut prm_tps = None;
+
+        parse_llama_log_line(line1, &mut rate, &mut acc, &mut gen, &mut mean_len, &mut eval_tps, &mut prm_tps);
+        assert!((rate.unwrap() - 54.762).abs() < 0.01);
+        assert_eq!(acc, 23);
+        assert_eq!(gen, 42);
+        assert!((mean_len.unwrap() - 2.64).abs() < 0.01);
+
+        let line2 = "599.52.846.521 I slot print_timing: id  0 | task 76084 |        eval time =     635.08 ms /    37 tokens (   17.64 ms per token,    56.69 tokens per second)";
+        parse_llama_log_line(line2, &mut rate, &mut acc, &mut gen, &mut mean_len, &mut eval_tps, &mut prm_tps);
+        assert!((eval_tps.unwrap() - 56.69).abs() < 0.01);
+
+        let line3 = "599.52.846.518 I slot print_timing: id  0 | task 76084 | prompt eval time =    1089.15 ms /   227 tokens (    4.80 ms per token,   208.42 tokens per second)";
+        parse_llama_log_line(line3, &mut rate, &mut acc, &mut gen, &mut mean_len, &mut eval_tps, &mut prm_tps);
+        assert!((prm_tps.unwrap() - 208.42).abs() < 0.01);
     }
 }

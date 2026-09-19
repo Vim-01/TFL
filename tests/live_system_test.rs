@@ -54,5 +54,52 @@ async fn test_live_llm_collector() {
         println!("Cache K: {}, Cache V: {}", metrics.cache_type_k, metrics.cache_type_v);
         println!("Speculative Draft: {:?}", metrics.speculative_draft_model);
         println!("Slots: {}/{}", metrics.active_slots, metrics.total_slots);
+        if let Some(r) = metrics.speculative_acceptance_rate {
+            println!("MTP Acceptance: {:.1}%", r);
+        }
     }
+}
+
+#[tokio::test]
+async fn test_live_dashboard_render() {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::Widget;
+    use tfl::app::App;
+    use tfl::model::MetricUpdate;
+    use tfl::ui::DashboardView;
+
+    let mut app = App::new();
+
+    // Collect live metrics
+    let mut cpu = CpuCollector::new();
+    let cpu_metrics = cpu.collect();
+    app.handle_metric_update(MetricUpdate::Cpu(cpu_metrics));
+
+    let mut gpu = CompositeGpuCollector::new();
+    let gpu_metrics = gpu.collect();
+    app.handle_metric_update(MetricUpdate::Gpu(gpu_metrics));
+
+    let mut llm = LlmCollector::new("http://127.0.0.1:8080".to_string());
+    let llm_metrics = llm.collect().await;
+    app.handle_metric_update(MetricUpdate::Llm(Box::new(llm_metrics)));
+
+    // Render Dashboard to in-memory terminal buffer (160x45)
+    let area = Rect::new(0, 0, 160, 45);
+    let mut buf = Buffer::empty(area);
+
+    let view = DashboardView::new(&app);
+    view.render(area, &mut buf);
+
+    // Verify buffer was written and non-empty
+    let mut non_empty_cells = 0;
+    for y in 0..area.height {
+        for x in 0..area.width {
+            if buf[(x, y)].symbol() != " " {
+                non_empty_cells += 1;
+            }
+        }
+    }
+    println!("Dashboard successfully rendered: {non_empty_cells} active glyph cells");
+    assert!(non_empty_cells > 100, "Dashboard should contain rendered glyphs");
 }

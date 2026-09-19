@@ -8,7 +8,7 @@ pub mod slots_view;
 pub mod widgets;
 
 use crate::app::{ActiveTab, App};
-use dashboard::DashboardView;
+pub use dashboard::DashboardView;
 use footer::Footer;
 use gpu_view::GpuDetailsView;
 use header::Header;

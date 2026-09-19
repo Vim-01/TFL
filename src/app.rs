@@ -37,13 +37,14 @@ pub struct App {
     pub gpus: Vec<GpuMetrics>,
     pub llm: Option<LlmMetrics>,
 
-    // 60-second historical data ring buffers
-    pub decode_tps_history: HistoryRingBuffer<f64, 60>,
-    pub prefill_tps_history: HistoryRingBuffer<f64, 60>,
-    pub gpu_compute_history: HistoryRingBuffer<f64, 60>,
-    pub gpu_vram_history: HistoryRingBuffer<f64, 60>,
-    pub cpu_usage_history: HistoryRingBuffer<f64, 60>,
-    pub speculative_history: HistoryRingBuffer<f64, 60>,
+    // 120-step historical data ring buffers (fills wide terminals cleanly)
+    pub decode_tps_history: HistoryRingBuffer<f64, 120>,
+    pub prefill_tps_history: HistoryRingBuffer<f64, 120>,
+    pub gpu_compute_history: HistoryRingBuffer<f64, 120>,
+    pub gpu_mem_controller_history: HistoryRingBuffer<f64, 120>,
+    pub gpu_vram_history: HistoryRingBuffer<f64, 120>,
+    pub cpu_usage_history: HistoryRingBuffer<f64, 120>,
+    pub speculative_history: HistoryRingBuffer<f64, 120>,
 
     pub active_tab: ActiveTab,
     pub is_paused: bool,
@@ -80,6 +81,7 @@ impl App {
             decode_tps_history: HistoryRingBuffer::with_initial(0.0),
             prefill_tps_history: HistoryRingBuffer::with_initial(0.0),
             gpu_compute_history: HistoryRingBuffer::with_initial(0.0),
+            gpu_mem_controller_history: HistoryRingBuffer::with_initial(0.0),
             gpu_vram_history: HistoryRingBuffer::with_initial(0.0),
             cpu_usage_history: HistoryRingBuffer::with_initial(0.0),
             speculative_history: HistoryRingBuffer::with_initial(0.0),
@@ -128,11 +130,19 @@ impl App {
                 if let Some(target_gpu) = gpus.get(self.selected_gpu_index).or_else(|| gpus.first()) {
                     let compute = target_gpu.compute_percent as f64;
                     let mem = target_gpu.mem_utilization_percent as f64;
+                    let vram_pct = if target_gpu.vram_total_bytes > 0 {
+                        (target_gpu.vram_used_bytes as f64 / target_gpu.vram_total_bytes as f64) * 100.0
+                    } else {
+                        0.0
+                    };
                     if compute.is_finite() {
                         self.gpu_compute_history.push(compute);
                     }
                     if mem.is_finite() {
-                        self.gpu_vram_history.push(mem);
+                        self.gpu_mem_controller_history.push(mem);
+                    }
+                    if vram_pct.is_finite() {
+                        self.gpu_vram_history.push(vram_pct);
                     }
                 }
                 self.gpus = gpus;

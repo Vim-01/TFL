@@ -1,12 +1,13 @@
 use crate::app::App;
+use crate::ui::widgets::{
+    power_gradient_color, thermal_color, BrailleCanvas, VerticalGauge,
+};
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, BorderType, Borders, Gauge, Row, Sparkline, Table, Widget,
-    },
+    widgets::{Block, BorderType, Borders, Gauge, Row, Table, Widget},
 };
 
 pub struct DashboardView<'a> {
@@ -54,53 +55,72 @@ impl<'a> DashboardView<'a> {
             return;
         }
 
-        // Split: Left = CPU history wave graph; Right = Multi-column core grid
+        // Split: Left = Full-height 2D Braille history graph (Area 1); Right = Compact btop-style cores sub-box (Area 3)
         let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+            .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
             .split(inner);
 
-        // Left: CPU History Sparkline
-        let cpu_hist: Vec<u64> = self
-            .app
-            .cpu_usage_history
-            .as_vec()
-            .iter()
-            .map(|&v| if v.is_finite() && v >= 0.0 { v.min(100.0) as u64 } else { 0 })
-            .collect();
-
+        // --- Left: Full-height 2D Braille Canvas (Area 1) ---
         let left_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(2), Constraint::Length(1)])
+            .constraints([Constraint::Length(1), Constraint::Min(2)])
             .split(cols[0]);
 
         let chart_title = Line::from(vec![
-            Span::styled("CPU Total Load (History): ", Style::default().fg(theme.fg_dim)),
-            Span::styled(format!("{global_usage:.1}%"), Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
+            Span::styled("CPU Total Load: ", Style::default().fg(theme.fg_dim)),
+            Span::styled(format!("{global_usage:.1}% "), Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("| Avg: {avg_freq:.2} GHz | Load: {:.2} {:.2} {:.2}", load_avg[0], load_avg[1], load_avg[2]), Style::default().fg(theme.fg_dim)),
         ]);
         buf.set_line(left_chunks[0].x, left_chunks[0].y, &chart_title, left_chunks[0].width);
 
-        Sparkline::default()
-            .data(&cpu_hist)
-            .max(100)
-            .style(Style::default().fg(theme.box_cpu))
+        // 2D Braille Canvas: fills the entire left height from top to bottom
+        let cpu_hist = self.app.cpu_usage_history.as_vec();
+        BrailleCanvas::new(&cpu_hist)
+            .max(100.0)
+            .colors(theme.box_cpu, theme.fg_highlight, theme.temp_hot, theme.bar_track)
             .render(left_chunks[1], buf);
 
-        let load_str = Line::from(vec![
-            Span::styled("Load avg: ", Style::default().fg(theme.fg_dim)),
-            Span::styled(format!("{:.2} {:.2} {:.2}", load_avg[0], load_avg[1], load_avg[2]), Style::default().fg(theme.fg)),
-        ]);
-        buf.set_line(left_chunks[2].x, left_chunks[2].y, &load_str, left_chunks[2].width);
+        // --- Right: Compact btop-style Cores & System Sub-box (Area 3) ---
+        let cores_block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Plain)
+            .border_style(Style::default().fg(theme.fg_dim))
+            .title(Line::from(vec![
+                Span::styled(" Cores & Memory ", Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
+            ]));
 
-        // Right: Multi-column CPU Cores Table (like btop)
+        let cores_inner = cores_block.inner(cols[1]);
+        cores_block.render(cols[1], buf);
+
         if let Some(cpu) = cpu_opt {
             let num_cores = cpu.core_usages.len();
-            if num_cores > 0 {
-                let max_cols = (cols[1].width / 15).max(1) as usize;
-                let num_cols = max_cols.min(num_cores).max(1);
-                let num_rows = num_cores.div_ceil(num_cols);
+            if num_cores > 0 && cores_inner.height >= 3 {
+                let sub_chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(1), // Header
+                        Constraint::Min(2),    // Cores Grid
+                        Constraint::Length(1), // Memory / Load
+                    ])
+                    .split(cores_inner);
 
-                let col_width = cols[1].width / (num_cols as u16).max(1);
+                // Sub-header
+                let ram_used = cpu.ram_used_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+                let ram_total = cpu.ram_total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+                let ram_pct = if ram_total > 0.0 { (ram_used / ram_total * 100.0) as u16 } else { 0 };
+
+                let sub_title = Line::from(vec![
+                    Span::styled(format!("{cpu_brand} "), Style::default().fg(theme.fg)),
+                    Span::styled(format!("[{avg_freq:.2} GHz]  "), Style::default().fg(theme.fg_dim)),
+                    Span::styled(format!("RAM: {ram_used:.1}/{ram_total:.1} GiB ({ram_pct}%)"), Style::default().fg(theme.border_active)),
+                ]);
+                buf.set_line(sub_chunks[0].x, sub_chunks[0].y, &sub_title, sub_chunks[0].width);
+
+                // Multi-column Core Grid with Braille Dot Bars
+                let num_cols = if cores_inner.width >= 48 { 4 } else { 3 };
+                let num_rows = num_cores.div_ceil(num_cols);
+                let col_width = sub_chunks[1].width / num_cols as u16;
 
                 for c in 0..num_cols {
                     for r in 0..num_rows {
@@ -108,54 +128,49 @@ impl<'a> DashboardView<'a> {
                         if core_idx >= num_cores {
                             break;
                         }
-                    let usage = cpu.core_usages[core_idx];
-                    let usage_clamped = if usage.is_finite() { usage.clamp(0.0, 100.0) } else { 0.0 };
+                        let usage = cpu.core_usages[core_idx];
+                        let usage_clamped = if usage.is_finite() { usage.clamp(0.0, 100.0) } else { 0.0 };
 
-                    let bar_color = if usage_clamped < 40.0 {
-                        theme.temp_cool
-                    } else if usage_clamped < 75.0 {
-                        theme.temp_warm
-                    } else {
-                        theme.temp_hot
-                    };
+                        let bar_color = if usage_clamped < 40.0 {
+                            theme.temp_cool
+                        } else if usage_clamped < 75.0 {
+                            theme.temp_warm
+                        } else {
+                            theme.temp_hot
+                        };
 
-                    let x = cols[1].x + (c as u16 * col_width);
-                    let y = cols[1].y + r as u16;
-                    if y < cols[1].y + cols[1].height {
-                        let bar_len = ((usage_clamped / 100.0) * 5.0).round() as usize;
-                        let bar_str = "■".repeat(bar_len);
-                        let empty_str = "·".repeat(5_usize.saturating_sub(bar_len));
+                        let x = sub_chunks[1].x + (c as u16 * col_width);
+                        let y = sub_chunks[1].y + r as u16;
 
-                        let core_line = Line::from(vec![
-                            Span::styled(format!("C{core_idx:<2}:"), Style::default().fg(theme.fg_dim)),
-                            Span::styled(bar_str, Style::default().fg(bar_color)),
-                            Span::styled(format!("{empty_str} "), Style::default().fg(theme.bar_track)),
-                            Span::styled(format!("{usage_clamped:>3.0}% "), Style::default().fg(theme.fg)),
-                        ]);
-                        buf.set_line(x, y, &core_line, col_width);
+                        if y < sub_chunks[1].y + sub_chunks[1].height {
+                            // Braille dot bar: dots '⣀' when 0%, filling with '⡇' and '⣿'
+                            let (bar_filled, bar_empty) = core_dot_bar(usage_clamped, 3);
+
+                            let core_line = Line::from(vec![
+                                Span::styled(format!("C{core_idx:<2}:"), Style::default().fg(theme.fg_dim)),
+                                Span::styled(bar_filled, Style::default().fg(bar_color)),
+                                Span::styled(bar_empty, Style::default().fg(theme.bar_track)),
+                                Span::styled(format!("{usage_clamped:>3.0}% "), Style::default().fg(theme.fg)),
+                            ]);
+                            buf.set_line(x, y, &core_line, col_width);
+                        }
                     }
                 }
-            }
 
-                // Bottom line: Memory & Swap
-                let mem_y = cols[1].y + num_rows as u16;
-                if mem_y < cols[1].y + cols[1].height {
-                    let ram_used = cpu.ram_used_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-                    let ram_total = cpu.ram_total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-                    let ram_pct = if ram_total > 0.0 { (ram_used / ram_total * 100.0) as u16 } else { 0 };
-
-                    let ram_line = Line::from(vec![
-                        Span::styled("RAM: ", Style::default().fg(theme.fg_dim)),
-                        Span::styled(format!("{ram_used:.1}/{ram_total:.1} GiB ({ram_pct}%)"), Style::default().fg(theme.border_active)),
-                    ]);
-                    buf.set_line(cols[1].x, mem_y, &ram_line, cols[1].width);
-                }
+                // Bottom Line
+                let bot_line = Line::from(vec![
+                    Span::styled("Load avg: ", Style::default().fg(theme.fg_dim)),
+                    Span::styled(format!("{:.2} {:.2} {:.2}  ", load_avg[0], load_avg[1], load_avg[2]), Style::default().fg(theme.fg)),
+                    Span::styled("Uptime: ", Style::default().fg(theme.fg_dim)),
+                    Span::styled(format_uptime(cpu.uptime_seconds), Style::default().fg(theme.fg)),
+                ]);
+                buf.set_line(sub_chunks[2].x, sub_chunks[2].y, &bot_line, sub_chunks[2].width);
             }
         }
     }
 
     // ------------------------------------------------------------------------
-    // Panel 2: GPU HARDWARE & VRAM (btop Style)
+    // Panel 2: GPU HARDWARE & VRAM (3-Way Split)
     // ------------------------------------------------------------------------
     fn render_gpu_panel(&self, area: Rect, buf: &mut Buffer) {
         let theme = &self.app.theme;
@@ -186,124 +201,212 @@ impl<'a> DashboardView<'a> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        if inner.height < 4 || inner.width < 20 {
+        if inner.height < 4 || inner.width < 24 {
             return;
         }
 
+        // 3-Way Division matching user instructions:
+        // Col 1 (6): GPU Compute Core Activity (2D Braille Canvas)
+        // Col 2 (5): GPU Memory Bus / IO Activity (2D Braille Canvas)
+        // Col 3 (2): VRAM Allocation, Thermals with exact colors, PWR gradient, Vertical Fan/Hotspot
         let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+            .constraints([
+                Constraint::Ratio(1, 3),
+                Constraint::Ratio(1, 3),
+                Constraint::Ratio(1, 3),
+            ])
             .split(inner);
 
-        // Left: Dual Sparkline (Compute & VRAM Bus activity)
-        let gpu_hist: Vec<u64> = self
-            .app
-            .gpu_compute_history
-            .as_vec()
-            .iter()
-            .map(|&v| if v.is_finite() && v >= 0.0 { v.min(100.0) as u64 } else { 0 })
-            .collect();
+        // --- Sub-block 1 (Col 1 / 6): GPU Compute Activity ---
+        let comp_block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Plain)
+            .border_style(Style::default().fg(theme.fg_dim))
+            .title(Line::from(vec![
+                Span::styled(" GPU Compute ", Style::default().fg(theme.spark_compute).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("{compute:.1}% | {sclk}MHz "), Style::default().fg(theme.fg_dim)),
+            ]));
+        let comp_inner = comp_block.inner(cols[0]);
+        comp_block.render(cols[0], buf);
 
-        let mem_hist: Vec<u64> = self
-            .app
-            .gpu_vram_history
-            .as_vec()
-            .iter()
-            .map(|&v| if v.is_finite() && v >= 0.0 { v.min(100.0) as u64 } else { 0 })
-            .collect();
+        if comp_inner.height >= 2 {
+            let comp_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Min(1)])
+                .split(comp_inner);
 
-        let left_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Min(1),
-                Constraint::Length(1),
-                Constraint::Min(1),
-            ])
-            .split(cols[0]);
-
-        let comp_title = Line::from(vec![
-            Span::styled("GPU Compute Activity: ", Style::default().fg(theme.fg_dim)),
-            Span::styled(format!("{compute:.1}%"), Style::default().fg(theme.spark_compute).add_modifier(Modifier::BOLD)),
-        ]);
-        buf.set_line(left_chunks[0].x, left_chunks[0].y, &comp_title, left_chunks[0].width);
-        Sparkline::default()
-            .data(&gpu_hist)
-            .max(100)
-            .style(Style::default().fg(theme.spark_compute))
-            .render(left_chunks[1], buf);
-
-        if left_chunks.len() >= 4 {
-            let mem_bus = gpu.map(|g| g.mem_utilization_percent).unwrap_or(0.0);
-            let bus_title = Line::from(vec![
-                Span::styled("Memory Bus / Controller: ", Style::default().fg(theme.fg_dim)),
-                Span::styled(format!("{mem_bus:.1}%"), Style::default().fg(theme.spark_mem).add_modifier(Modifier::BOLD)),
+            let comp_line = Line::from(vec![
+                Span::styled("Compute Load: ", Style::default().fg(theme.fg_dim)),
+                Span::styled(format!("{compute:.1}%"), Style::default().fg(theme.spark_compute).add_modifier(Modifier::BOLD)),
             ]);
-            buf.set_line(left_chunks[2].x, left_chunks[2].y, &bus_title, left_chunks[2].width);
-            Sparkline::default()
-                .data(&mem_hist)
-                .max(100)
-                .style(Style::default().fg(theme.spark_mem))
-                .render(left_chunks[3], buf);
+            buf.set_line(comp_chunks[0].x, comp_chunks[0].y, &comp_line, comp_chunks[0].width);
+
+            let comp_hist = self.app.gpu_compute_history.as_vec();
+            BrailleCanvas::new(&comp_hist)
+                .max(100.0)
+                .colors(theme.spark_compute, theme.fg_highlight, theme.temp_hot, theme.bar_track)
+                .render(comp_chunks[1], buf);
         }
 
-        // Right: VRAM Bar, Power, Temperatures
-        if let Some(g) = gpu {
-            let right_chunks = Layout::default()
+        // --- Sub-block 2 (Col 2 / 5): Memory Bus / Controller IO ---
+        let mem_bus = gpu.map(|g| g.mem_utilization_percent).unwrap_or(0.0);
+        let mclk = gpu.and_then(|g| g.mclk_mhz).unwrap_or(0);
+
+        let mem_block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Plain)
+            .border_style(Style::default().fg(theme.fg_dim))
+            .title(Line::from(vec![
+                Span::styled(" Memory Bus / IO ", Style::default().fg(theme.spark_mem).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("{mem_bus:.1}% | {mclk}MHz "), Style::default().fg(theme.fg_dim)),
+            ]));
+        let mem_inner = mem_block.inner(cols[1]);
+        mem_block.render(cols[1], buf);
+
+        if mem_inner.height >= 2 {
+            let mem_chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(2), // VRAM Gauge
-                    Constraint::Length(1), // Power Gauge
-                    Constraint::Length(1), // Temperatures
-                    Constraint::Min(1),    // Clocks
-                ])
-                .split(cols[1]);
+                .constraints([Constraint::Length(1), Constraint::Min(1)])
+                .split(mem_inner);
 
-            let vram_used_gib = g.vram_used_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-            let vram_total_gib = g.vram_total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-            let vram_pct = if vram_total_gib > 0.0 {
-                ((vram_used_gib / vram_total_gib) * 100.0).clamp(0.0, 100.0) as u16
-            } else {
-                0
-            };
-
-            let vram_label = format!("{vram_used_gib:.1} / {vram_total_gib:.1} GiB ({vram_pct}%)");
-            Gauge::default()
-                .block(Block::default().title(Span::styled("VRAM Allocation:", Style::default().fg(theme.fg_dim))))
-                .gauge_style(Style::default().fg(theme.border_active).bg(theme.bar_track))
-                .percent(vram_pct)
-                .label(vram_label)
-                .render(right_chunks[0], buf);
-
-            let pwr_cur = g.power_current_w.unwrap_or(0.0);
-            let pwr_cap = g.power_cap_w.unwrap_or(0.0);
-            let pwr_line = Line::from(vec![
-                Span::styled("PWR: ", Style::default().fg(theme.fg_dim)),
-                Span::styled(format!("{pwr_cur:.1} W"), Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
-                Span::styled(format!(" / {pwr_cap:.1} W    "), Style::default().fg(theme.fg_dim)),
-                Span::styled("Fan: ", Style::default().fg(theme.fg_dim)),
-                Span::styled(g.fan_percent.map(|f| format!("{f:.0}%")).unwrap_or_else(|| "Auto".to_string()), Style::default().fg(theme.fg)),
+            let bus_line = Line::from(vec![
+                Span::styled("Bus / Controller: ", Style::default().fg(theme.fg_dim)),
+                Span::styled(format!("{mem_bus:.1}%"), Style::default().fg(theme.spark_mem).add_modifier(Modifier::BOLD)),
             ]);
-            buf.set_line(right_chunks[1].x, right_chunks[1].y, &pwr_line, right_chunks[1].width);
+            buf.set_line(mem_chunks[0].x, mem_chunks[0].y, &bus_line, mem_chunks[0].width);
 
-            let temp_edge = g.temp_edge_c.unwrap_or(0.0);
-            let temp_hot = g.temp_hotspot_c.unwrap_or(0.0);
-            let temp_mem = g.temp_mem_c.unwrap_or(0.0);
-            let temp_line = Line::from(vec![
-                Span::styled("TEMP: ", Style::default().fg(theme.fg_dim)),
-                Span::styled(format!("{temp_edge:.0}°C"), Style::default().fg(theme.temp_cool)),
-                Span::styled(" (Edge)  ", Style::default().fg(theme.fg_dim)),
-                Span::styled(format!("{temp_hot:.0}°C"), Style::default().fg(theme.temp_warm)),
-                Span::styled(" (Hotspot)  ", Style::default().fg(theme.fg_dim)),
-                Span::styled(format!("{temp_mem:.0}°C"), Style::default().fg(theme.temp_cool)),
-                Span::styled(" (VRAM)", Style::default().fg(theme.fg_dim)),
-            ]);
-            buf.set_line(right_chunks[2].x, right_chunks[2].y, &temp_line, right_chunks[2].width);
+            let mem_hist = self.app.gpu_mem_controller_history.as_vec();
+            BrailleCanvas::new(&mem_hist)
+                .max(100.0)
+                .colors(theme.spark_mem, theme.fg_highlight, theme.temp_hot, theme.bar_track)
+                .render(mem_chunks[1], buf);
+        }
+
+        // --- Sub-block 3 (Col 3 / 2): VRAM, Thermals, Power & Vertical Gauges ---
+        let vram_used_gib = gpu.map(|g| g.vram_used_bytes as f64 / (1024.0 * 1024.0 * 1024.0)).unwrap_or(0.0);
+        let vram_total_gib = gpu.map(|g| g.vram_total_bytes as f64 / (1024.0 * 1024.0 * 1024.0)).unwrap_or(24.0);
+        let vram_pct = if vram_total_gib > 0.0 {
+            ((vram_used_gib / vram_total_gib) * 100.0).clamp(0.0, 100.0) as u16
+        } else {
+            0
+        };
+
+        let right_block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Plain)
+            .border_style(Style::default().fg(theme.fg_dim))
+            .title(Line::from(vec![
+                Span::styled(" VRAM & Thermals ", Style::default().fg(theme.border_active).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("{vram_used_gib:.1}/{vram_total_gib:.1} GiB "), Style::default().fg(theme.fg_dim)),
+            ]));
+        let right_inner = right_block.inner(cols[2]);
+        right_block.render(cols[2], buf);
+
+        if let Some(g) = gpu {
+            if right_inner.height >= 3 {
+                let right_chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(2), // VRAM rectangular gauge
+                        Constraint::Min(2),    // Thermals, PWR, and Vertical Gauges
+                    ])
+                    .split(right_inner);
+
+                // 1. VRAM Allocation rectangular gauge
+                let vram_label = format!("{vram_used_gib:.1} / {vram_total_gib:.1} GiB ({vram_pct}%)");
+                Gauge::default()
+                    .block(Block::default().title(Span::styled("VRAM Allocation:", Style::default().fg(theme.fg_dim))))
+                    .gauge_style(Style::default().fg(theme.border_active).bg(theme.bar_track))
+                    .percent(vram_pct)
+                    .label(vram_label)
+                    .render(right_chunks[0], buf);
+
+                // 2. Split lower section into: Left (Thermals & PWR) and Right (Vertical FAN & Hotspot)
+                let lower_cols = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Min(16),   // Thermals and PWR
+                        Constraint::Length(10), // Vertical FAN and HOTSPOT
+                    ])
+                    .split(right_chunks[1]);
+
+                // Lower Left: Thermal Scales with explicit colors and PWR dot gradient
+                let temp_edge = g.temp_edge_c.unwrap_or(0.0);
+                let temp_hot = g.temp_hotspot_c.unwrap_or(0.0);
+                let temp_mem = g.temp_mem_c.unwrap_or(0.0);
+
+                let pwr_cur = g.power_current_w.unwrap_or(0.0);
+                let pwr_cap = g.power_cap_w.unwrap_or(402.0).max(1.0);
+                let pwr_pct = (pwr_cur / pwr_cap * 100.0).clamp(0.0, 100.0);
+
+                let diag_chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(1), // Edge temp
+                        Constraint::Length(1), // VRAM temp
+                        Constraint::Length(1), // PWR dot gradient
+                    ])
+                    .split(lower_cols[0]);
+
+                // Edge Temp with user color rule: 0-70 Green, 70-80 Yellow, 80-84 Orange, 85+ Red
+                let edge_color = thermal_color(temp_edge);
+                let (edge_bar, edge_empty) = rectangular_bar(temp_edge, 100.0, 6);
+                let edge_line = Line::from(vec![
+                    Span::styled("Edge: ", Style::default().fg(theme.fg_dim)),
+                    Span::styled(edge_bar, Style::default().fg(edge_color)),
+                    Span::styled(edge_empty, Style::default().fg(theme.bar_track)),
+                    Span::styled(format!(" {temp_edge:.0}°C"), Style::default().fg(edge_color).add_modifier(Modifier::BOLD)),
+                ]);
+                buf.set_line(diag_chunks[0].x, diag_chunks[0].y, &edge_line, diag_chunks[0].width);
+
+                // VRAM Temp with user color rule
+                let mem_color = thermal_color(temp_mem);
+                let (mem_bar, mem_empty) = rectangular_bar(temp_mem, 100.0, 6);
+                let mem_line = Line::from(vec![
+                    Span::styled("VRAM: ", Style::default().fg(theme.fg_dim)),
+                    Span::styled(mem_bar, Style::default().fg(mem_color)),
+                    Span::styled(mem_empty, Style::default().fg(theme.bar_track)),
+                    Span::styled(format!(" {temp_mem:.0}°C"), Style::default().fg(mem_color).add_modifier(Modifier::BOLD)),
+                ]);
+                buf.set_line(diag_chunks[1].x, diag_chunks[1].y, &mem_line, diag_chunks[1].width);
+
+                // PWR Dot Gradient: dots filled with green to red gradient based on % consumption
+                let pwr_color = power_gradient_color(pwr_pct);
+                let (pwr_dots_filled, pwr_dots_empty) = dot_gradient_bar(pwr_pct, 6);
+                let pwr_line = Line::from(vec![
+                    Span::styled("PWR:  ", Style::default().fg(theme.fg_dim)),
+                    Span::styled(pwr_dots_filled, Style::default().fg(pwr_color)),
+                    Span::styled(pwr_dots_empty, Style::default().fg(theme.bar_track)),
+                    Span::styled(format!(" {pwr_cur:.0}W"), Style::default().fg(pwr_color).add_modifier(Modifier::BOLD)),
+                ]);
+                buf.set_line(diag_chunks[2].x, diag_chunks[2].y, &pwr_line, diag_chunks[2].width);
+
+                // Lower Right: Vertical Column Gauges for FAN and HOTSPOT
+                let vert_cols = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                    .split(lower_cols[1]);
+
+                let fan_pct = g.fan_percent.unwrap_or(0.0);
+                let fan_label = format!("{fan_pct:.0}%");
+                let fan_color = if fan_pct < 40.0 { theme.temp_cool } else if fan_pct < 75.0 { theme.temp_warm } else { theme.temp_hot };
+                VerticalGauge::new("FAN", &fan_label, fan_pct, fan_color)
+                    .dim_color(theme.bar_track)
+                    .render(vert_cols[0], buf);
+
+                let hot_pct = (temp_hot / 110.0 * 100.0).clamp(0.0, 100.0);
+                let hot_label = format!("{temp_hot:.0}°");
+                let hot_color = thermal_color(temp_hot);
+                VerticalGauge::new("HOT", &hot_label, hot_pct, hot_color)
+                    .dim_color(theme.bar_track)
+                    .render(vert_cols[1], buf);
+            }
         }
     }
 
     // ------------------------------------------------------------------------
-    // Panel 3: LLM INFERENCE ENGINE & KV CACHE
+    // Panel 3: LLM INFERENCE ENGINE, MTP VALIDATION & KV CACHE
     // ------------------------------------------------------------------------
     fn render_llm_panel(&self, area: Rect, buf: &mut Buffer) {
         let theme = &self.app.theme;
@@ -339,9 +442,9 @@ impl<'a> DashboardView<'a> {
             .constraints([
                 Constraint::Length(1), // Engine, Quant, Cache KV
                 Constraint::Length(1), // Speculative Draft Model
+                Constraint::Length(2), // MTP Acceptance Validation Progress Bar
                 Constraint::Length(2), // KV Cache Pool Gauge
-                Constraint::Length(2), // Context Window Gauge
-                Constraint::Min(2),    // Throughput Stats & Sparkline
+                Constraint::Min(2),    // Throughput Stats & Mini Braille Graph
             ])
             .split(inner);
 
@@ -351,9 +454,9 @@ impl<'a> DashboardView<'a> {
         let l1 = Line::from(vec![
             Span::styled("Engine: ", Style::default().fg(theme.fg_dim)),
             Span::styled(engine, Style::default().fg(theme.border_active).add_modifier(Modifier::BOLD)),
-            Span::styled("   Quant: ", Style::default().fg(theme.fg_dim)),
+            Span::styled("  Quant: ", Style::default().fg(theme.fg_dim)),
             Span::styled(quant, Style::default().fg(theme.fg_highlight)),
-            Span::styled("   Cache KV: ", Style::default().fg(theme.fg_dim)),
+            Span::styled("  Cache KV: ", Style::default().fg(theme.fg_dim)),
             Span::styled(format!("K:{cache_k} V:{cache_v}"), Style::default().fg(theme.fg)),
         ]);
         buf.set_line(chunks[0].x, chunks[0].y, &l1, chunks[0].width);
@@ -367,29 +470,48 @@ impl<'a> DashboardView<'a> {
         ]);
         buf.set_line(chunks[1].x, chunks[1].y, &l2, chunks[1].width);
 
-        // KV Cache Pool Gauge
-        let kv_pool_pct = llm.map(|l| l.kv_cache_pool_percent).unwrap_or(0.0);
-        let gauge_label = format!("{kv_pool_pct:.1}%");
+        // MTP Acceptance Validation Section
+        let mtp_rate_opt = llm.and_then(|l| l.speculative_acceptance_rate);
+        let mtp_acc = llm.map(|l| l.mtp_draft_accepted).unwrap_or(0);
+        let mtp_gen = llm.map(|l| l.mtp_draft_generated).unwrap_or(0);
+        let mtp_mean = llm.and_then(|l| l.mtp_mean_len).unwrap_or(0.0);
+
+        let (mtp_pct, mtp_color, mtp_title) = if let Some(rate) = mtp_rate_opt {
+            let color = if rate >= 60.0 {
+                theme.temp_cool // High acceptance
+            } else if rate >= 40.0 {
+                theme.temp_warm // Moderate
+            } else {
+                theme.temp_hot  // Low acceptance
+            };
+            let title = format!("MTP Validation: {rate:.1}% ({mtp_acc}/{mtp_gen} accepted, mean len: {mtp_mean:.2})");
+            (rate.clamp(0.0, 100.0) as u16, color, title)
+        } else {
+            (0, theme.bar_track, "MTP Validation: Awaiting inference token telemetry...".to_string())
+        };
+
         Gauge::default()
-            .block(Block::default().title(Span::styled("KV Cache Pool:", Style::default().fg(theme.fg_dim))))
-            .gauge_style(Style::default().fg(theme.border_active).bg(theme.bar_track))
-            .percent(kv_pool_pct.round() as u16)
-            .label(gauge_label)
+            .block(Block::default().title(Span::styled(mtp_title, Style::default().fg(theme.fg_dim))))
+            .gauge_style(Style::default().fg(mtp_color).bg(theme.bar_track))
+            .percent(mtp_pct)
+            .label(format!("{mtp_pct}%"))
             .render(chunks[2], buf);
 
-        // Context Window Gauge
+        // KV Cache Pool Gauge
+        let kv_pool_pct = llm.map(|l| l.kv_cache_pool_percent).unwrap_or(0.0);
         let ctx_used = llm.map(|l| l.context_tokens_used).unwrap_or(0);
         let ctx_max = llm.map(|l| l.context_window_max).unwrap_or(1).max(1);
         let ctx_pct = ((ctx_used as f64 / ctx_max as f64) * 100.0).clamp(0.0, 100.0) as u16;
-        let ctx_label = format!("{ctx_used} / {ctx_max} tokens ({ctx_pct}%)");
+
+        let gauge_label = format!("KV: {kv_pool_pct:.1}% | Ctx: {ctx_used}/{ctx_max} ({ctx_pct}%)");
         Gauge::default()
-            .block(Block::default().title(Span::styled("Context Window:", Style::default().fg(theme.fg_dim))))
-            .gauge_style(Style::default().fg(theme.box_gpu).bg(theme.bar_track))
-            .percent(ctx_pct)
-            .label(ctx_label)
+            .block(Block::default().title(Span::styled("KV Cache Pool & Context:", Style::default().fg(theme.fg_dim))))
+            .gauge_style(Style::default().fg(theme.border_active).bg(theme.bar_track))
+            .percent(kv_pool_pct.round() as u16)
+            .label(gauge_label)
             .render(chunks[3], buf);
 
-        // Throughput & 60s Sparkline
+        // Throughput & Live Token Generation Mini-Graph
         if chunks[4].height >= 2 {
             let spark_layout = Layout::default()
                 .direction(Direction::Vertical)
@@ -397,34 +519,30 @@ impl<'a> DashboardView<'a> {
                 .split(chunks[4]);
 
             let prefill_tps = llm.map(|l| l.current_prefill_tps).unwrap_or(0.0);
+            let peak_tps = llm.map(|l| l.peak_decode_tps).unwrap_or(0.0).max(self.app.decode_tps_history.max() as f32);
+
             let tps_line = Line::from(vec![
                 Span::styled("Decode: ", Style::default().fg(theme.fg_dim)),
                 Span::styled(format!("{dec_tps:.1} t/s  "), Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
                 Span::styled("Prefill: ", Style::default().fg(theme.fg_dim)),
                 Span::styled(format!("{prefill_tps:.0} t/s  "), Style::default().fg(theme.temp_cool)),
-                Span::styled(format!("Peak: {:.1} t/s", self.app.decode_tps_history.max()), Style::default().fg(theme.fg_dim)),
+                Span::styled("Peak: ", Style::default().fg(theme.fg_dim)),
+                Span::styled(format!("{peak_tps:.1} t/s"), Style::default().fg(theme.fg_highlight)),
             ]);
             buf.set_line(spark_layout[0].x, spark_layout[0].y, &tps_line, spark_layout[0].width);
 
-            let hist_u64: Vec<u64> = self
-                .app
-                .decode_tps_history
-                .as_vec()
-                .iter()
-                .map(|&v| if v.is_finite() && v >= 0.0 { (v * 10.0).min(50_000.0) as u64 } else { 0 })
-                .collect();
-            let max_val = (self.app.decode_tps_history.max() * 10.0).clamp(100.0, 50_000.0) as u64;
-
-            Sparkline::default()
-                .data(&hist_u64)
+            // Mini 2D Braille Canvas for token generation throughput history
+            let tps_hist = self.app.decode_tps_history.as_vec();
+            let max_val = self.app.decode_tps_history.max().max(50.0);
+            BrailleCanvas::new(&tps_hist)
                 .max(max_val)
-                .style(Style::default().fg(theme.spark_tps))
+                .colors(theme.spark_tps, theme.fg_highlight, theme.temp_hot, theme.bar_track)
                 .render(spark_layout[1], buf);
         }
     }
 
     // ------------------------------------------------------------------------
-    // Panel 4: ACTIVE SLOTS & TASKS TABLE (Interactive with ↑/↓ keys)
+    // Panel 4: ACTIVE SLOTS TABLE (Compressed with MTP Validation Column)
     // ------------------------------------------------------------------------
     fn render_slots_panel(&self, area: Rect, buf: &mut Buffer) {
         let theme = &self.app.theme;
@@ -435,8 +553,8 @@ impl<'a> DashboardView<'a> {
 
         let title = Line::from(vec![
             Span::styled("┌3slots", Style::default().fg(theme.box_queue).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("───Parallel Slots ({active_slots}/{total_slots} Active)────────"), Style::default().fg(theme.box_queue)),
-            Span::styled("──[↑/↓:Select]────┐", Style::default().fg(theme.box_queue)),
+            Span::styled(format!("───Slots ({active_slots}/{total_slots})──"), Style::default().fg(theme.box_queue)),
+            Span::styled("──[↑/↓]──┐", Style::default().fg(theme.box_queue)),
         ]);
 
         let block = Block::default()
@@ -448,23 +566,27 @@ impl<'a> DashboardView<'a> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        let header = Row::new(vec!["  Slot", "Task ID", "Status", "Prompt", "Decoded", "Mode"])
+        let header = Row::new(vec!["Slot", "Task", "Status", "Prompt", "Dec", "MTP%", "Mode"])
             .style(Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD));
 
         let mut rows = Vec::new();
         if let Some(l) = llm {
             for (i, slot) in l.slots.iter().enumerate() {
                 let is_selected = i == self.app.selected_slot_index;
-                let cursor = if is_selected { "▶ " } else { "  " };
+                let cursor = if is_selected { "▶" } else { " " };
 
                 let status_color = if slot.is_processing {
                     theme.status_online
                 } else {
                     theme.fg_dim
                 };
-                let status_str = if slot.is_processing { "Generating" } else { "Idle" };
+                let status_str = if slot.is_processing { "Active" } else { "Idle" };
                 let task_str = slot.id_task.map(|t| t.to_string()).unwrap_or_else(|| "—".to_string());
-                let mode_str = if slot.speculative { "Draft MTP" } else { "Standard" };
+                let mode_str = if slot.speculative { "Draft" } else { "Base" };
+                let mtp_str = slot
+                    .draft_acceptance_rate
+                    .map(|r| format!("{r:.0}%"))
+                    .unwrap_or_else(|| "—".to_string());
 
                 let row_style = if is_selected {
                     Style::default().fg(theme.selected_fg).bg(theme.selected_bg).add_modifier(Modifier::BOLD)
@@ -484,6 +606,7 @@ impl<'a> DashboardView<'a> {
                     Line::from(Span::styled(status_str, status_style)),
                     Line::from(slot.n_prompt_tokens.to_string()),
                     Line::from(slot.n_decoded.to_string()),
+                    Line::from(mtp_str),
                     Line::from(mode_str.to_string()),
                 ]).style(row_style));
             }
@@ -492,12 +615,13 @@ impl<'a> DashboardView<'a> {
         if rows.is_empty() {
             rows.push(
                 Row::new(vec![
-                    Line::from("▶ #0"),
+                    Line::from("▶#0"),
                     Line::from("—"),
                     Line::from(Span::styled("Idle", Style::default().fg(theme.fg_dim))),
                     Line::from("0"),
                     Line::from("0"),
-                    Line::from("Standard"),
+                    Line::from("—"),
+                    Line::from("Draft"),
                 ])
                 .style(Style::default().fg(theme.selected_fg).bg(theme.selected_bg)),
             );
@@ -506,12 +630,13 @@ impl<'a> DashboardView<'a> {
         let table = Table::new(
             rows,
             [
+                Constraint::Length(5),
+                Constraint::Length(7),
                 Constraint::Length(8),
-                Constraint::Length(10),
-                Constraint::Length(12),
-                Constraint::Length(10),
-                Constraint::Length(10),
-                Constraint::Min(10),
+                Constraint::Length(7),
+                Constraint::Length(6),
+                Constraint::Length(6),
+                Constraint::Min(6),
             ],
         )
         .header(header)
@@ -521,12 +646,60 @@ impl<'a> DashboardView<'a> {
     }
 }
 
+// ----------------------------------------------------------------------------
+// Helper formatting functions
+// ----------------------------------------------------------------------------
+
+fn core_dot_bar(usage: f32, length: usize) -> (String, String) {
+    let frac = (usage / 100.0).clamp(0.0, 1.0);
+    let total_dots = length * 2;
+    let filled_dots = (frac * total_dots as f32).round() as usize;
+    let full_chars = filled_dots / 2;
+    let has_half = !filled_dots.is_multiple_of(2);
+    let mut filled_str = "⣿".repeat(full_chars);
+    if has_half {
+        filled_str.push('⡇');
+    }
+    let empty_len = length.saturating_sub(filled_str.chars().count());
+    let empty_str = "⣀".repeat(empty_len);
+    (filled_str, empty_str)
+}
+
+fn rectangular_bar(val: f32, max_val: f32, length: usize) -> (String, String) {
+    let frac = if max_val > 0.0 { (val / max_val).clamp(0.0, 1.0) } else { 0.0 };
+    let filled_len = (frac * length as f32).round() as usize;
+    let filled_str = "█".repeat(filled_len);
+    let empty_str = "░".repeat(length.saturating_sub(filled_len));
+    (filled_str, empty_str)
+}
+
+fn dot_gradient_bar(pct: f32, length: usize) -> (String, String) {
+    let frac = (pct / 100.0).clamp(0.0, 1.0);
+    let filled_len = (frac * length as f32).round() as usize;
+    let filled_str = "●".repeat(filled_len);
+    let empty_str = "·".repeat(length.saturating_sub(filled_len));
+    (filled_str, empty_str)
+}
+
+fn format_uptime(seconds: u64) -> String {
+    let days = seconds / 86400;
+    let hours = (seconds % 86400) / 3600;
+    let mins = (seconds % 3600) / 60;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {mins}m")
+    } else {
+        format!("{mins}m")
+    }
+}
+
 impl<'a> Widget for DashboardView<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Divide dashboard into 3 tiers matching btop:
-        // Tier 1: CPU & System Panel (top ~33%)
-        // Tier 2: GPU Panel (middle ~33%)
-        // Tier 3: LLM Inference & Slots (bottom ~34%) split into 2 columns
+        // Divide dashboard into 3 tiers:
+        // Tier 1: CPU Panel (~33%)
+        // Tier 2: GPU Panel (~33%)
+        // Tier 3: LLM & Slots Row (~34%) with 62/38 horizontal split
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -539,13 +712,13 @@ impl<'a> Widget for DashboardView<'a> {
         // 1. CPU Panel
         self.render_cpu_panel(rows[0], buf);
 
-        // 2. GPU Panel
+        // 2. GPU Panel (3-way split inside)
         self.render_gpu_panel(rows[1], buf);
 
-        // 3. LLM & Slots Row (2 columns)
+        // 3. LLM & Compressed Slots Row
         let tier3_cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
             .split(rows[2]);
 
         self.render_llm_panel(tier3_cols[0], buf);
