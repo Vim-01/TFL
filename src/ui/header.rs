@@ -30,9 +30,9 @@ impl<'a> Widget for Header<'a> {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Length(26), // Title & Logo
-                Constraint::Min(32),    // Navigation Tabs + Options Menu
-                Constraint::Length(34), // Backend Status & Clock
+                Constraint::Length(25), // Title & Logo
+                Constraint::Min(45),    // Navigation Tabs + Options Menu
+                Constraint::Length(26), // Backend Status & Clock
             ])
             .split(area);
 
@@ -60,7 +60,8 @@ impl<'a> Widget for Header<'a> {
             (ActiveTab::Dashboard, "1:Dashboard"),
             (ActiveTab::GpuDetails, "2:GPU"),
             (ActiveTab::SlotsDetails, "3:Slots"),
-            (ActiveTab::Help, "4:Help"),
+            (ActiveTab::GpuTop, "4:GPU Top"),
+            (ActiveTab::Help, "5:Help"),
         ];
 
         let mut tab_spans = Vec::new();

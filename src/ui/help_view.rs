@@ -54,8 +54,8 @@ impl<'a> Widget for HelpView<'a> {
                 Span::styled("Cycle forward / backward through view tabs", Style::default().fg(theme.fg)),
             ]),
             Line::from(vec![
-                Span::styled("  [1] - [4]       ", Style::default().fg(theme.fg_highlight)),
-                Span::styled("Direct switch to Dashboard, GPU, Slots, or Help view", Style::default().fg(theme.fg)),
+                Span::styled("  [1] - [5]       ", Style::default().fg(theme.fg_highlight)),
+                Span::styled("Direct switch to Dashboard, GPU, Slots, GPU Top, or Help view", Style::default().fg(theme.fg)),
             ]),
             Line::from(vec![
                 Span::styled("  [p]             ", Style::default().fg(theme.fg_highlight)),

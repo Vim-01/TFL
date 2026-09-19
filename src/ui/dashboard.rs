@@ -776,8 +776,10 @@ impl<'a> DashboardView<'a> {
         let processes = gpu.map(|g| &g.processes[..]).unwrap_or(&[]);
 
         let title = Line::from(vec![
-            Span::styled("┌3gputop", Style::default().fg(theme.box_gpu).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("───GPU Top ({} procs)─────────────", processes.len()), Style::default().fg(theme.box_gpu)),
+            Span::styled("┌4gputop", Style::default().fg(theme.box_gpu).add_modifier(Modifier::BOLD)),
+            Span::styled("──GPU Top ", Style::default().fg(theme.box_gpu)),
+            Span::styled(format!("({} procs)", processes.len()), Style::default().fg(theme.fg_highlight)),
+            Span::styled("──", Style::default().fg(theme.box_gpu)),
         ]);
 
         let block = Block::default()
@@ -793,7 +795,7 @@ impl<'a> DashboardView<'a> {
             return;
         }
 
-        let header = Row::new(vec!["PID", "Process", "VRAM", "GTT", "%VRAM"])
+        let header = Row::new(vec!["    PID", "Process", "    VRAM", "    GTT", "%VRAM"])
             .style(Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD));
 
         let mut rows = Vec::new();
@@ -819,21 +821,21 @@ impl<'a> DashboardView<'a> {
             };
 
             rows.push(Row::new(vec![
-                Line::from(p.pid.to_string()),
+                Line::from(format!("{:>7}", p.pid)),
                 Line::from(p.name.clone()),
-                Line::from(vram_str),
-                Line::from(gtt_str),
-                Line::from(format!("{:.0}%", p.vram_percent)),
+                Line::from(format!("{:>8}", vram_str)),
+                Line::from(format!("{:>7}", gtt_str)),
+                Line::from(format!("{:>5}", format!("{:.0}%", p.vram_percent))),
             ]).style(row_style));
         }
 
         if rows.is_empty() {
             rows.push(Row::new(vec![
-                Line::from("—"),
+                Line::from("      —"),
                 Line::from("No GPU clients"),
-                Line::from("0 MiB"),
-                Line::from("0 MiB"),
-                Line::from("0%"),
+                Line::from("   0 MiB"),
+                Line::from("  0 MiB"),
+                Line::from("   0%"),
             ]).style(Style::default().fg(theme.fg_dim)));
         }
 
@@ -842,9 +844,9 @@ impl<'a> DashboardView<'a> {
             [
                 Constraint::Length(7),
                 Constraint::Min(10),
-                Constraint::Length(10),
-                Constraint::Length(9),
-                Constraint::Length(6),
+                Constraint::Length(8),
+                Constraint::Length(7),
+                Constraint::Length(5),
             ],
         )
         .header(header)

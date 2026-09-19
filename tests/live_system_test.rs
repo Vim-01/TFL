@@ -117,3 +117,46 @@ async fn test_live_dashboard_render() {
     println!("Dashboard successfully rendered: {non_empty_cells} active glyph cells");
     assert!(non_empty_cells > 100, "Dashboard should contain rendered glyphs");
 }
+
+#[tokio::test]
+async fn test_live_gpu_top_render() {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::Widget;
+    use tfl::app::{ActiveTab, App};
+    use tfl::model::MetricUpdate;
+    use tfl::ui::gpu_top_view::GpuTopView;
+
+    let mut app = App::new();
+    let mut gpu = CompositeGpuCollector::new();
+    let gpu_metrics = gpu.collect();
+    app.handle_metric_update(MetricUpdate::Gpu(gpu_metrics));
+
+    // Tab transitions
+    assert_eq!(ActiveTab::Dashboard.next(), ActiveTab::GpuDetails);
+    assert_eq!(ActiveTab::GpuDetails.next(), ActiveTab::SlotsDetails);
+    assert_eq!(ActiveTab::SlotsDetails.next(), ActiveTab::GpuTop);
+    assert_eq!(ActiveTab::GpuTop.next(), ActiveTab::Help);
+    assert_eq!(ActiveTab::Help.next(), ActiveTab::Dashboard);
+
+    assert_eq!(ActiveTab::Dashboard.prev(), ActiveTab::Help);
+    assert_eq!(ActiveTab::Help.prev(), ActiveTab::GpuTop);
+    assert_eq!(ActiveTab::GpuTop.prev(), ActiveTab::SlotsDetails);
+
+    // Render GpuTopView
+    let area = Rect::new(0, 0, 160, 45);
+    let mut buf = Buffer::empty(area);
+    let view = GpuTopView::new(&app);
+    view.render(area, &mut buf);
+
+    let mut non_empty_cells = 0;
+    for y in 0..area.height {
+        for x in 0..area.width {
+            if buf[(x, y)].symbol() != " " {
+                non_empty_cells += 1;
+            }
+        }
+    }
+    println!("GpuTopView rendered: {non_empty_cells} active glyph cells");
+    assert!(non_empty_cells > 50, "GpuTopView should render borders and process info");
+}

@@ -1,5 +1,6 @@
 pub mod dashboard;
 pub mod footer;
+pub mod gpu_top_view;
 pub mod gpu_view;
 pub mod header;
 pub mod help_view;
@@ -10,6 +11,7 @@ pub mod widgets;
 use crate::app::{ActiveTab, App};
 pub use dashboard::DashboardView;
 use footer::Footer;
+use gpu_top_view::GpuTopView;
 use gpu_view::GpuDetailsView;
 use header::Header;
 use help_view::HelpView;
@@ -52,6 +54,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
         }
         ActiveTab::SlotsDetails => {
             frame.render_widget(SlotsDetailsView::new(app), chunks[1]);
+        }
+        ActiveTab::GpuTop => {
+            frame.render_widget(GpuTopView::new(app), chunks[1]);
         }
         ActiveTab::Help => {
             frame.render_widget(HelpView::new(&app.theme), chunks[1]);

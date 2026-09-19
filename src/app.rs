@@ -6,6 +6,7 @@ pub enum ActiveTab {
     Dashboard,
     GpuDetails,
     SlotsDetails,
+    GpuTop,
     Help,
 }
 
@@ -14,7 +15,8 @@ impl ActiveTab {
         match self {
             Self::Dashboard => Self::GpuDetails,
             Self::GpuDetails => Self::SlotsDetails,
-            Self::SlotsDetails => Self::Help,
+            Self::SlotsDetails => Self::GpuTop,
+            Self::GpuTop => Self::Help,
             Self::Help => Self::Dashboard,
         }
     }
@@ -24,7 +26,8 @@ impl ActiveTab {
             Self::Dashboard => Self::Help,
             Self::GpuDetails => Self::Dashboard,
             Self::SlotsDetails => Self::GpuDetails,
-            Self::Help => Self::SlotsDetails,
+            Self::GpuTop => Self::SlotsDetails,
+            Self::Help => Self::GpuTop,
         }
     }
 }
@@ -51,6 +54,7 @@ pub struct App {
     pub should_quit: bool,
     pub selected_gpu_index: usize,
     pub selected_slot_index: usize,
+    pub selected_process_index: usize,
 
     // Theming and Options State
     pub theme_id: ThemeId,
@@ -90,6 +94,7 @@ impl App {
             should_quit: false,
             selected_gpu_index: 0,
             selected_slot_index: 0,
+            selected_process_index: 0,
             theme_id,
             theme,
             solid_background,
@@ -287,6 +292,13 @@ impl App {
             ActiveTab::GpuDetails if !self.gpus.is_empty() => {
                 self.selected_gpu_index = (self.selected_gpu_index + 1) % self.gpus.len();
             }
+            ActiveTab::GpuTop => {
+                if let Some(gpu) = self.gpus.first() {
+                    if !gpu.processes.is_empty() {
+                        self.selected_process_index = (self.selected_process_index + 1) % gpu.processes.len();
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -314,6 +326,17 @@ impl App {
                     self.selected_gpu_index = self.gpus.len().saturating_sub(1);
                 } else {
                     self.selected_gpu_index -= 1;
+                }
+            }
+            ActiveTab::GpuTop => {
+                if let Some(gpu) = self.gpus.first() {
+                    if !gpu.processes.is_empty() {
+                        if self.selected_process_index == 0 {
+                            self.selected_process_index = gpu.processes.len().saturating_sub(1);
+                        } else {
+                            self.selected_process_index -= 1;
+                        }
+                    }
                 }
             }
             _ => {}
