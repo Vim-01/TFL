@@ -404,7 +404,7 @@ impl<'a> DashboardView<'a> {
                     .split(lower_cols[0]);
 
                 // Edge Temp (0-70 Green, 70-80 Yellow, 80-84 Orange, 85+ Red)
-                if !diag_chunks.is_empty() {
+                if !diag_chunks.is_empty() && diag_chunks[0].height > 0 {
                     let edge_color = thermal_color(temp_edge);
                     let (edge_bar, edge_empty) = rectangular_bar(temp_edge, 100.0, bar_len);
                     let edge_line = Line::from(vec![
@@ -417,7 +417,7 @@ impl<'a> DashboardView<'a> {
                 }
 
                 // Hotspot Temp
-                if diag_chunks.len() >= 2 {
+                if diag_chunks.len() >= 2 && diag_chunks[1].height > 0 {
                     let hot_color = thermal_color(temp_hot);
                     let (hot_bar, hot_empty) = rectangular_bar(temp_hot, 110.0, bar_len);
                     let hot_line = Line::from(vec![
@@ -430,7 +430,7 @@ impl<'a> DashboardView<'a> {
                 }
 
                 // VRAM Temp
-                if diag_chunks.len() >= 3 {
+                if diag_chunks.len() >= 3 && diag_chunks[2].height > 0 {
                     let mem_color = thermal_color(temp_mem);
                     let (mem_bar, mem_empty) = rectangular_bar(temp_mem, 100.0, bar_len);
                     let mem_line = Line::from(vec![
@@ -443,7 +443,7 @@ impl<'a> DashboardView<'a> {
                 }
 
                 // PWR Dot Gradient: dots filled with green to red gradient based on % consumption
-                if diag_chunks.len() >= 4 {
+                if diag_chunks.len() >= 4 && diag_chunks[3].height > 0 {
                     let pwr_color = power_gradient_color(pwr_pct);
                     let (pwr_dots_filled, pwr_dots_empty) = dot_gradient_bar(pwr_pct, bar_len);
                     let pwr_line = Line::from(vec![
