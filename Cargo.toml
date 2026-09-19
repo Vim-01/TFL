@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["TFL Contributors"]
 description = "Modern, high-performance TUI for local LLM inference and host hardware monitoring (llama.cpp, vLLM, AMD ROCm, NVIDIA NVML, CPU)"
-license = "MIT OR Apache-2.0"
+license = "AGPL-3.0-or-later"
 readme = "README.md"
 
 [lib]
