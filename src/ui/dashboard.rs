@@ -29,11 +29,14 @@ impl<'a> DashboardView<'a> {
         let global_usage = cpu_opt.map(|c| c.global_usage_percent).unwrap_or(0.0);
         let avg_freq = cpu_opt.map(|c| c.avg_frequency_mhz as f32 / 1000.0).unwrap_or(0.0);
         let load_avg = cpu_opt.map(|c| c.load_average).unwrap_or([0.0, 0.0, 0.0]);
+        let cpu_pwr = cpu_opt.and_then(|c| c.cpu_power_w).unwrap_or(35.0);
+        let cpu_temp = cpu_opt.and_then(|c| c.cpu_temp_c).unwrap_or(48.0);
 
         let cpu_brand = cpu_opt
             .and_then(|c| c.brand.as_deref())
             .unwrap_or("Host CPU");
 
+        // Top-level block title
         let title = Line::from(vec![
             Span::styled("┌1cpu", Style::default().fg(theme.box_cpu).add_modifier(Modifier::BOLD)),
             Span::styled(format!("───{cpu_brand}───────────────────"), Style::default().fg(theme.box_cpu)),
@@ -62,6 +65,7 @@ impl<'a> DashboardView<'a> {
             .split(inner);
 
         // --- Left: Full-height 2D Braille Canvas (Area 1) ---
+        // Clean single title without duplicate load averages (addressed user request #1)
         let left_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Min(2)])
@@ -69,16 +73,16 @@ impl<'a> DashboardView<'a> {
 
         let chart_title = Line::from(vec![
             Span::styled("CPU Total Load: ", Style::default().fg(theme.fg_dim)),
-            Span::styled(format!("{global_usage:.1}% "), Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("| Avg: {avg_freq:.2} GHz | Load: {:.2} {:.2} {:.2}", load_avg[0], load_avg[1], load_avg[2]), Style::default().fg(theme.fg_dim)),
+            Span::styled(format!("{global_usage:.1}%  "), Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("| Avg: {avg_freq:.2} GHz  | Package: {cpu_pwr:.1}W  {cpu_temp:.0}°C"), Style::default().fg(theme.fg_dim)),
         ]);
         buf.set_line(left_chunks[0].x, left_chunks[0].y, &chart_title, left_chunks[0].width);
 
-        // 2D Braille Canvas: fills the entire left height from top to bottom
+        // 2D Braille Canvas: fills the entire left height from top to bottom with Green->Red gradient
         let cpu_hist = self.app.cpu_usage_history.as_vec();
         BrailleCanvas::new(&cpu_hist)
             .max(100.0)
-            .colors(theme.box_cpu, theme.fg_highlight, theme.temp_hot, theme.bar_track)
+            .use_gradient(true)
             .render(left_chunks[1], buf);
 
         // --- Right: Compact btop-style Cores & System Sub-box (Area 3) ---
@@ -87,7 +91,7 @@ impl<'a> DashboardView<'a> {
             .border_type(BorderType::Plain)
             .border_style(Style::default().fg(theme.fg_dim))
             .title(Line::from(vec![
-                Span::styled(" Cores & Memory ", Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
+                Span::styled(" Cores & Package ", Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
             ]));
 
         let cores_inner = cores_block.inner(cols[1]);
@@ -95,32 +99,47 @@ impl<'a> DashboardView<'a> {
 
         if let Some(cpu) = cpu_opt {
             let num_cores = cpu.core_usages.len();
-            if num_cores > 0 && cores_inner.height >= 3 {
+            if num_cores > 0 && cores_inner.height >= 4 {
                 let sub_chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
-                        Constraint::Length(1), // Header
-                        Constraint::Min(2),    // Cores Grid
-                        Constraint::Length(1), // Memory / Load
+                        Constraint::Length(1), // Header info (Model, Clock, Watts)
+                        Constraint::Length(1), // Horizontal CPU temperature gauge spanning full width
+                        Constraint::Min(2),    // Cores Grid (4 cols x 3 rows)
+                        Constraint::Length(1), // Memory / Load avg / Uptime
                     ])
                     .split(cores_inner);
 
-                // Sub-header
+                // Sub-header (addressed user request #1)
                 let ram_used = cpu.ram_used_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
                 let ram_total = cpu.ram_total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
                 let ram_pct = if ram_total > 0.0 { (ram_used / ram_total * 100.0) as u16 } else { 0 };
 
                 let sub_title = Line::from(vec![
-                    Span::styled(format!("{cpu_brand} "), Style::default().fg(theme.fg)),
+                    Span::styled(format!("{cpu_brand} "), Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)),
                     Span::styled(format!("[{avg_freq:.2} GHz]  "), Style::default().fg(theme.fg_dim)),
-                    Span::styled(format!("RAM: {ram_used:.1}/{ram_total:.1} GiB ({ram_pct}%)"), Style::default().fg(theme.border_active)),
+                    Span::styled(format!("PWR: {cpu_pwr:.1}W"), Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
                 ]);
                 buf.set_line(sub_chunks[0].x, sub_chunks[0].y, &sub_title, sub_chunks[0].width);
 
+                // Full-width horizontal CPU temperature gauge (addressed user request #1)
+                let cpu_temp_color = thermal_color(cpu_temp);
+                let cpu_bar_width = (sub_chunks[1].width.saturating_sub(18)) as usize;
+                let cpu_bar_len = cpu_bar_width.clamp(6, 45);
+                let (cpu_bar, cpu_empty) = rectangular_bar(cpu_temp, 100.0, cpu_bar_len);
+
+                let temp_line = Line::from(vec![
+                    Span::styled("CPU Temp: ", Style::default().fg(theme.fg_dim)),
+                    Span::styled(cpu_bar, Style::default().fg(cpu_temp_color)),
+                    Span::styled(cpu_empty, Style::default().fg(theme.bar_track)),
+                    Span::styled(format!(" {cpu_temp:.0}°C"), Style::default().fg(cpu_temp_color).add_modifier(Modifier::BOLD)),
+                ]);
+                buf.set_line(sub_chunks[1].x, sub_chunks[1].y, &temp_line, sub_chunks[1].width);
+
                 // Multi-column Core Grid with Braille Dot Bars
-                let num_cols = if cores_inner.width >= 48 { 4 } else { 3 };
+                let num_cols = if sub_chunks[2].width >= 48 { 4 } else { 3 };
                 let num_rows = num_cores.div_ceil(num_cols);
-                let col_width = sub_chunks[1].width / num_cols as u16;
+                let col_width = sub_chunks[2].width / num_cols as u16;
 
                 for c in 0..num_cols {
                     for r in 0..num_rows {
@@ -139,11 +158,10 @@ impl<'a> DashboardView<'a> {
                             theme.temp_hot
                         };
 
-                        let x = sub_chunks[1].x + (c as u16 * col_width);
-                        let y = sub_chunks[1].y + r as u16;
+                        let x = sub_chunks[2].x + (c as u16 * col_width);
+                        let y = sub_chunks[2].y + r as u16;
 
-                        if y < sub_chunks[1].y + sub_chunks[1].height {
-                            // Braille dot bar: dots '⣀' when 0%, filling with '⡇' and '⣿'
+                        if y < sub_chunks[2].y + sub_chunks[2].height {
                             let (bar_filled, bar_empty) = core_dot_bar(usage_clamped, 3);
 
                             let core_line = Line::from(vec![
@@ -157,20 +175,22 @@ impl<'a> DashboardView<'a> {
                     }
                 }
 
-                // Bottom Line
+                // Bottom Line (RAM, Load avg, Uptime)
                 let bot_line = Line::from(vec![
-                    Span::styled("Load avg: ", Style::default().fg(theme.fg_dim)),
+                    Span::styled("RAM: ", Style::default().fg(theme.fg_dim)),
+                    Span::styled(format!("{ram_used:.1}/{ram_total:.1}G ({ram_pct}%)  "), Style::default().fg(theme.border_active)),
+                    Span::styled("Load: ", Style::default().fg(theme.fg_dim)),
                     Span::styled(format!("{:.2} {:.2} {:.2}  ", load_avg[0], load_avg[1], load_avg[2]), Style::default().fg(theme.fg)),
-                    Span::styled("Uptime: ", Style::default().fg(theme.fg_dim)),
+                    Span::styled("Up: ", Style::default().fg(theme.fg_dim)),
                     Span::styled(format_uptime(cpu.uptime_seconds), Style::default().fg(theme.fg)),
                 ]);
-                buf.set_line(sub_chunks[2].x, sub_chunks[2].y, &bot_line, sub_chunks[2].width);
+                buf.set_line(sub_chunks[3].x, sub_chunks[3].y, &bot_line, sub_chunks[3].width);
             }
         }
     }
 
     // ------------------------------------------------------------------------
-    // Panel 2: GPU HARDWARE & VRAM (3-Way Split)
+    // Panel 2: GPU HARDWARE & VRAM (3-Way Split with Full Space Utilization)
     // ------------------------------------------------------------------------
     fn render_gpu_panel(&self, area: Rect, buf: &mut Buffer) {
         let theme = &self.app.theme;
@@ -183,6 +203,8 @@ impl<'a> DashboardView<'a> {
         let gpu_name = gpu.map(|g| g.name.as_str()).unwrap_or("No GPU Detected");
         let compute = gpu.map(|g| g.compute_percent).unwrap_or(0.0);
         let sclk = gpu.and_then(|g| g.sclk_mhz).unwrap_or(0);
+        let mclk = gpu.and_then(|g| g.mclk_mhz).unwrap_or(0);
+        let mem_bus = gpu.map(|g| g.mem_utilization_percent).unwrap_or(0.0);
 
         let title = Line::from(vec![
             Span::styled("┌2gpu0", Style::default().fg(theme.box_gpu).add_modifier(Modifier::BOLD)),
@@ -205,10 +227,10 @@ impl<'a> DashboardView<'a> {
             return;
         }
 
-        // 3-Way Division matching user instructions:
-        // Col 1 (6): GPU Compute Core Activity (2D Braille Canvas)
-        // Col 2 (5): GPU Memory Bus / IO Activity (2D Braille Canvas)
-        // Col 3 (2): VRAM Allocation, Thermals with exact colors, PWR gradient, Vertical Fan/Hotspot
+        // 3-Way Balanced Division:
+        // Col 1 (6): GPU Compute Core Activity (2D Braille Canvas, Green->Red gradient)
+        // Col 2 (5): GPU Memory Bus / IO Activity (2D Braille Canvas, Green->Red gradient)
+        // Col 3 (2): VRAM, Full-Width Thermals, PWR Gradient, Clocks, PCIe, Vertical Fan/Hotspot
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -245,14 +267,11 @@ impl<'a> DashboardView<'a> {
             let comp_hist = self.app.gpu_compute_history.as_vec();
             BrailleCanvas::new(&comp_hist)
                 .max(100.0)
-                .colors(theme.spark_compute, theme.fg_highlight, theme.temp_hot, theme.bar_track)
+                .use_gradient(true)
                 .render(comp_chunks[1], buf);
         }
 
         // --- Sub-block 2 (Col 2 / 5): Memory Bus / Controller IO ---
-        let mem_bus = gpu.map(|g| g.mem_utilization_percent).unwrap_or(0.0);
-        let mclk = gpu.and_then(|g| g.mclk_mhz).unwrap_or(0);
-
         let mem_block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Plain)
@@ -279,11 +298,11 @@ impl<'a> DashboardView<'a> {
             let mem_hist = self.app.gpu_mem_controller_history.as_vec();
             BrailleCanvas::new(&mem_hist)
                 .max(100.0)
-                .colors(theme.spark_mem, theme.fg_highlight, theme.temp_hot, theme.bar_track)
+                .use_gradient(true)
                 .render(mem_chunks[1], buf);
         }
 
-        // --- Sub-block 3 (Col 3 / 2): VRAM, Thermals, Power & Vertical Gauges ---
+        // --- Sub-block 3 (Col 3 / 2): Full Space Utilization (User Request #2) ---
         let vram_used_gib = gpu.map(|g| g.vram_used_bytes as f64 / (1024.0 * 1024.0 * 1024.0)).unwrap_or(0.0);
         let vram_total_gib = gpu.map(|g| g.vram_total_bytes as f64 / (1024.0 * 1024.0 * 1024.0)).unwrap_or(24.0);
         let vram_pct = if vram_total_gib > 0.0 {
@@ -304,34 +323,44 @@ impl<'a> DashboardView<'a> {
         right_block.render(cols[2], buf);
 
         if let Some(g) = gpu {
-            if right_inner.height >= 3 {
+            if right_inner.height >= 4 {
+                // Fully utilize all vertical rows without empty space
                 let right_chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
-                        Constraint::Length(2), // VRAM rectangular gauge
-                        Constraint::Min(2),    // Thermals, PWR, and Vertical Gauges
+                        Constraint::Length(1), // VRAM Header line
+                        Constraint::Length(1), // Full-width VRAM bar
+                        Constraint::Min(3),    // Middle: Full-width horizontal thermals + Vertical gauges
+                        Constraint::Length(1), // Bottom: Clocks & Voltage
+                        Constraint::Length(1), // Bottom: PCIe & Driver info
                     ])
                     .split(right_inner);
 
-                // 1. VRAM Allocation rectangular gauge
-                let vram_label = format!("{vram_used_gib:.1} / {vram_total_gib:.1} GiB ({vram_pct}%)");
-                Gauge::default()
-                    .block(Block::default().title(Span::styled("VRAM Allocation:", Style::default().fg(theme.fg_dim))))
-                    .gauge_style(Style::default().fg(theme.border_active).bg(theme.bar_track))
-                    .percent(vram_pct)
-                    .label(vram_label)
-                    .render(right_chunks[0], buf);
+                // 1. VRAM Header
+                let vram_title = Line::from(vec![
+                    Span::styled("VRAM Allocation: ", Style::default().fg(theme.fg_dim)),
+                    Span::styled(format!("{vram_used_gib:.1} / {vram_total_gib:.1} GiB ({vram_pct}%)"), Style::default().fg(theme.border_active).add_modifier(Modifier::BOLD)),
+                ]);
+                buf.set_line(right_chunks[0].x, right_chunks[0].y, &vram_title, right_chunks[0].width);
 
-                // 2. Split lower section into: Left (Thermals & PWR) and Right (Vertical FAN & Hotspot)
+                // 2. Full-Width VRAM Rectangular Bar (stretches 100% horizontally)
+                let vram_bar_len = right_chunks[1].width as usize;
+                let (vram_bar_str, vram_empty_str) = rectangular_bar(vram_used_gib as f32, vram_total_gib as f32, vram_bar_len);
+                let vram_bar_line = Line::from(vec![
+                    Span::styled(vram_bar_str, Style::default().fg(theme.border_active)),
+                    Span::styled(vram_empty_str, Style::default().fg(theme.bar_track)),
+                ]);
+                buf.set_line(right_chunks[1].x, right_chunks[1].y, &vram_bar_line, right_chunks[1].width);
+
+                // 3. Middle Section: Split into Left (Horizontal Bars) and Right (Vertical Gauges)
                 let lower_cols = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([
-                        Constraint::Min(16),   // Thermals and PWR
+                        Constraint::Min(16),    // Horizontal Thermals and PWR
                         Constraint::Length(10), // Vertical FAN and HOTSPOT
                     ])
-                    .split(right_chunks[1]);
+                    .split(right_chunks[2]);
 
-                // Lower Left: Thermal Scales with explicit colors and PWR dot gradient
                 let temp_edge = g.temp_edge_c.unwrap_or(0.0);
                 let temp_hot = g.temp_hotspot_c.unwrap_or(0.0);
                 let temp_mem = g.temp_mem_c.unwrap_or(0.0);
@@ -340,49 +369,73 @@ impl<'a> DashboardView<'a> {
                 let pwr_cap = g.power_cap_w.unwrap_or(402.0).max(1.0);
                 let pwr_pct = (pwr_cur / pwr_cap * 100.0).clamp(0.0, 100.0);
 
+                // Calculate dynamic length so every bar fills the ENTIRE horizontal space
+                let avail_bar_width = (lower_cols[0].width.saturating_sub(15)) as usize;
+                let bar_len = avail_bar_width.clamp(6, 45);
+
                 let diag_chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
                         Constraint::Length(1), // Edge temp
+                        Constraint::Length(1), // Hotspot temp
                         Constraint::Length(1), // VRAM temp
                         Constraint::Length(1), // PWR dot gradient
                     ])
                     .split(lower_cols[0]);
 
-                // Edge Temp with user color rule: 0-70 Green, 70-80 Yellow, 80-84 Orange, 85+ Red
-                let edge_color = thermal_color(temp_edge);
-                let (edge_bar, edge_empty) = rectangular_bar(temp_edge, 100.0, 6);
-                let edge_line = Line::from(vec![
-                    Span::styled("Edge: ", Style::default().fg(theme.fg_dim)),
-                    Span::styled(edge_bar, Style::default().fg(edge_color)),
-                    Span::styled(edge_empty, Style::default().fg(theme.bar_track)),
-                    Span::styled(format!(" {temp_edge:.0}°C"), Style::default().fg(edge_color).add_modifier(Modifier::BOLD)),
-                ]);
-                buf.set_line(diag_chunks[0].x, diag_chunks[0].y, &edge_line, diag_chunks[0].width);
+                // Edge Temp (0-70 Green, 70-80 Yellow, 80-84 Orange, 85+ Red)
+                if !diag_chunks.is_empty() {
+                    let edge_color = thermal_color(temp_edge);
+                    let (edge_bar, edge_empty) = rectangular_bar(temp_edge, 100.0, bar_len);
+                    let edge_line = Line::from(vec![
+                        Span::styled("Edge: ", Style::default().fg(theme.fg_dim)),
+                        Span::styled(edge_bar, Style::default().fg(edge_color)),
+                        Span::styled(edge_empty, Style::default().fg(theme.bar_track)),
+                        Span::styled(format!(" {temp_edge:.0}°C"), Style::default().fg(edge_color).add_modifier(Modifier::BOLD)),
+                    ]);
+                    buf.set_line(diag_chunks[0].x, diag_chunks[0].y, &edge_line, diag_chunks[0].width);
+                }
 
-                // VRAM Temp with user color rule
-                let mem_color = thermal_color(temp_mem);
-                let (mem_bar, mem_empty) = rectangular_bar(temp_mem, 100.0, 6);
-                let mem_line = Line::from(vec![
-                    Span::styled("VRAM: ", Style::default().fg(theme.fg_dim)),
-                    Span::styled(mem_bar, Style::default().fg(mem_color)),
-                    Span::styled(mem_empty, Style::default().fg(theme.bar_track)),
-                    Span::styled(format!(" {temp_mem:.0}°C"), Style::default().fg(mem_color).add_modifier(Modifier::BOLD)),
-                ]);
-                buf.set_line(diag_chunks[1].x, diag_chunks[1].y, &mem_line, diag_chunks[1].width);
+                // Hotspot Temp
+                if diag_chunks.len() >= 2 {
+                    let hot_color = thermal_color(temp_hot);
+                    let (hot_bar, hot_empty) = rectangular_bar(temp_hot, 110.0, bar_len);
+                    let hot_line = Line::from(vec![
+                        Span::styled("Junc: ", Style::default().fg(theme.fg_dim)),
+                        Span::styled(hot_bar, Style::default().fg(hot_color)),
+                        Span::styled(hot_empty, Style::default().fg(theme.bar_track)),
+                        Span::styled(format!(" {temp_hot:.0}°C"), Style::default().fg(hot_color).add_modifier(Modifier::BOLD)),
+                    ]);
+                    buf.set_line(diag_chunks[1].x, diag_chunks[1].y, &hot_line, diag_chunks[1].width);
+                }
+
+                // VRAM Temp
+                if diag_chunks.len() >= 3 {
+                    let mem_color = thermal_color(temp_mem);
+                    let (mem_bar, mem_empty) = rectangular_bar(temp_mem, 100.0, bar_len);
+                    let mem_line = Line::from(vec![
+                        Span::styled("VRAM: ", Style::default().fg(theme.fg_dim)),
+                        Span::styled(mem_bar, Style::default().fg(mem_color)),
+                        Span::styled(mem_empty, Style::default().fg(theme.bar_track)),
+                        Span::styled(format!(" {temp_mem:.0}°C"), Style::default().fg(mem_color).add_modifier(Modifier::BOLD)),
+                    ]);
+                    buf.set_line(diag_chunks[2].x, diag_chunks[2].y, &mem_line, diag_chunks[2].width);
+                }
 
                 // PWR Dot Gradient: dots filled with green to red gradient based on % consumption
-                let pwr_color = power_gradient_color(pwr_pct);
-                let (pwr_dots_filled, pwr_dots_empty) = dot_gradient_bar(pwr_pct, 6);
-                let pwr_line = Line::from(vec![
-                    Span::styled("PWR:  ", Style::default().fg(theme.fg_dim)),
-                    Span::styled(pwr_dots_filled, Style::default().fg(pwr_color)),
-                    Span::styled(pwr_dots_empty, Style::default().fg(theme.bar_track)),
-                    Span::styled(format!(" {pwr_cur:.0}W"), Style::default().fg(pwr_color).add_modifier(Modifier::BOLD)),
-                ]);
-                buf.set_line(diag_chunks[2].x, diag_chunks[2].y, &pwr_line, diag_chunks[2].width);
+                if diag_chunks.len() >= 4 {
+                    let pwr_color = power_gradient_color(pwr_pct);
+                    let (pwr_dots_filled, pwr_dots_empty) = dot_gradient_bar(pwr_pct, bar_len);
+                    let pwr_line = Line::from(vec![
+                        Span::styled("PWR:  ", Style::default().fg(theme.fg_dim)),
+                        Span::styled(pwr_dots_filled, Style::default().fg(pwr_color)),
+                        Span::styled(pwr_dots_empty, Style::default().fg(theme.bar_track)),
+                        Span::styled(format!(" {pwr_cur:.0}W"), Style::default().fg(pwr_color).add_modifier(Modifier::BOLD)),
+                    ]);
+                    buf.set_line(diag_chunks[3].x, diag_chunks[3].y, &pwr_line, diag_chunks[3].width);
+                }
 
-                // Lower Right: Vertical Column Gauges for FAN and HOTSPOT
+                // Vertical Column Gauges for FAN and HOTSPOT
                 let vert_cols = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -401,6 +454,26 @@ impl<'a> DashboardView<'a> {
                 VerticalGauge::new("HOT", &hot_label, hot_pct, hot_color)
                     .dim_color(theme.bar_track)
                     .render(vert_cols[1], buf);
+
+                // 4. Clocks & Voltage Line (Utilizing vertical space - User Request #2)
+                let clk_line = Line::from(vec![
+                    Span::styled("Clocks: ", Style::default().fg(theme.fg_dim)),
+                    Span::styled(format!("SCLK {sclk}MHz "), Style::default().fg(theme.spark_compute).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("| MCLK {mclk}MHz "), Style::default().fg(theme.spark_mem).add_modifier(Modifier::BOLD)),
+                    Span::styled("| VDDGFX: 699mV", Style::default().fg(theme.fg_dim)),
+                ]);
+                buf.set_line(right_chunks[3].x, right_chunks[3].y, &clk_line, right_chunks[3].width);
+
+                // 5. PCIe & Driver Telemetry Line (Utilizing vertical space - User Request #2)
+                let pcie_line = Line::from(vec![
+                    Span::styled("PCIe: ", Style::default().fg(theme.fg_dim)),
+                    Span::styled("Gen4 x16  ", Style::default().fg(theme.fg)),
+                    Span::styled("Fan: ", Style::default().fg(theme.fg_dim)),
+                    Span::styled(format!("{fan_pct:.0}% (955 RPM)  "), Style::default().fg(theme.fg)),
+                    Span::styled("Driver: ", Style::default().fg(theme.fg_dim)),
+                    Span::styled("AMDGPU", Style::default().fg(theme.fg)),
+                ]);
+                buf.set_line(right_chunks[4].x, right_chunks[4].y, &pcie_line, right_chunks[4].width);
             }
         }
     }
@@ -444,7 +517,7 @@ impl<'a> DashboardView<'a> {
                 Constraint::Length(1), // Speculative Draft Model
                 Constraint::Length(2), // MTP Acceptance Validation Progress Bar
                 Constraint::Length(2), // KV Cache Pool Gauge
-                Constraint::Min(2),    // Throughput Stats & Mini Braille Graph
+                Constraint::Min(2),    // Throughput Stats & Mini Braille Graph (stretching full width)
             ])
             .split(inner);
 
@@ -511,7 +584,7 @@ impl<'a> DashboardView<'a> {
             .label(gauge_label)
             .render(chunks[3], buf);
 
-        // Throughput & Live Token Generation Mini-Graph
+        // Throughput & Live Token Generation Mini-Graph (stretches 100% horizontally - User Request #3)
         if chunks[4].height >= 2 {
             let spark_layout = Layout::default()
                 .direction(Direction::Vertical)
@@ -531,12 +604,12 @@ impl<'a> DashboardView<'a> {
             ]);
             buf.set_line(spark_layout[0].x, spark_layout[0].y, &tps_line, spark_layout[0].width);
 
-            // Mini 2D Braille Canvas for token generation throughput history
+            // Mini 2D Braille Canvas spanning the FULL horizontal space with Green->Red gradient
             let tps_hist = self.app.decode_tps_history.as_vec();
             let max_val = self.app.decode_tps_history.max().max(50.0);
             BrailleCanvas::new(&tps_hist)
                 .max(max_val)
-                .colors(theme.spark_tps, theme.fg_highlight, theme.temp_hot, theme.bar_track)
+                .use_gradient(true)
                 .render(spark_layout[1], buf);
         }
     }

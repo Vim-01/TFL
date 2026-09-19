@@ -112,6 +112,10 @@ pub struct CpuMetrics {
     pub load_average: [f64; 3],
     /// CPU model name / brand (e.g. AMD Ryzen 5 5500X3D, Intel i9-13900K)
     pub brand: Option<String>,
+    /// CPU package temperature in Celsius
+    pub cpu_temp_c: Option<f32>,
+    /// CPU package power consumption in Watts
+    pub cpu_power_w: Option<f32>,
 }
 
 /// GPU Vendor identification
