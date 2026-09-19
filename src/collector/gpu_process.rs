@@ -28,15 +28,6 @@ pub fn collect_drm_gpu_processes(total_vram_bytes: u64) -> Vec<GpuProcessInfo> {
             continue;
         }
 
-        // Read process name from /proc/<pid>/comm
-        let comm = fs::read_to_string(pid_path.join("comm"))
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default();
-
-        if comm.is_empty() {
-            continue;
-        }
-
         let fd_entries = match fs::read_dir(&fdinfo_dir) {
             Ok(e) => e,
             Err(_) => continue,
@@ -63,18 +54,10 @@ pub fn collect_drm_gpu_processes(total_vram_bytes: u64) -> Vec<GpuProcessInfo> {
                     client_id = Some(rest.trim().to_string());
                 } else if let Some(rest) = line.strip_prefix("drm-memory-vram:") {
                     is_drm_fd = true;
-                    if let Some(num_str) = rest.split_whitespace().next() {
-                        if let Ok(val) = num_str.parse::<u64>() {
-                            fd_vram_kib = val;
-                        }
-                    }
+                    fd_vram_kib = parse_drm_memory_kib(rest.trim());
                 } else if let Some(rest) = line.strip_prefix("drm-memory-gtt:") {
                     is_drm_fd = true;
-                    if let Some(num_str) = rest.split_whitespace().next() {
-                        if let Ok(val) = num_str.parse::<u64>() {
-                            fd_gtt_kib = val;
-                        }
-                    }
+                    fd_gtt_kib = parse_drm_memory_kib(rest.trim());
                 }
             }
 
@@ -92,6 +75,11 @@ pub fn collect_drm_gpu_processes(total_vram_bytes: u64) -> Vec<GpuProcessInfo> {
         }
 
         if has_drm && (total_vram_kib > 0 || total_gtt_kib > 0) {
+            // Read process name only for verified GPU clients (avoids hundreds of idle daemon reads)
+            let comm = fs::read_to_string(pid_path.join("comm"))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|_| format!("PID {pid}"));
+
             let vram_bytes = total_vram_kib.saturating_mul(1024);
             let gtt_bytes = total_gtt_kib.saturating_mul(1024);
             let vram_percent = if total_vram_bytes > 0 {
@@ -113,6 +101,19 @@ pub fn collect_drm_gpu_processes(total_vram_bytes: u64) -> Vec<GpuProcessInfo> {
     // Sort descending by VRAM usage
     processes.sort_by_key(|a| std::cmp::Reverse(a.vram_bytes));
     processes
+}
+
+fn parse_drm_memory_kib(line: &str) -> u64 {
+    let mut parts = line.split_whitespace();
+    let val: u64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let unit = parts.next().unwrap_or("KiB");
+    match unit {
+        "B" => val / 1024,
+        "KiB" => val,
+        "MiB" => val.saturating_mul(1024),
+        "GiB" => val.saturating_mul(1024 * 1024),
+        _ => val,
+    }
 }
 
 #[cfg(test)]
