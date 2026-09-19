@@ -1,0 +1,24 @@
+# Maintainer: vimozyoko <kotstik2275@gmail.com>
+pkgname=tfl
+pkgver=0.1.0_beta
+pkgrel=1
+pkgdesc="Modern, high-performance TUI for local LLM inference and host hardware monitoring"
+arch=('x86_64')
+url="https://github.com/Vim-01/TFL"
+license=('AGPL3')
+depends=('glibc' 'gcc-libs')
+makedepends=('cargo')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/Vim-01/TFL/archive/refs/tags/v0.1.0-beta.tar.gz")
+sha256sums=('be8c8de89f5cbea81ed3cf794fdb74827b73bb41ba97759f1a25dca83dced177')
+
+build() {
+  cd "TFL-0.1.0-beta"
+  cargo build --release --locked --all-features --target-dir=target
+}
+
+package() {
+  cd "TFL-0.1.0-beta"
+  install -Dm 755 target/release/tfl -t "${pkgdir}/usr/bin"
+  install -Dm 644 README.md -t "${pkgdir}/usr/share/doc/${pkgname}"
+  install -Dm 644 LICENSE -t "${pkgdir}/usr/share/licenses/${pkgname}"
+}
