@@ -39,6 +39,15 @@ async fn test_live_gpu_collector() {
         if let Some(p) = g.power_current_w {
             println!("Power: {:.1} W", p);
         }
+        if let Some(rpm) = g.fan_rpm {
+            println!("Fan RPM: {}", rpm);
+        }
+        if let Some(mv) = g.voltage_mv {
+            println!("Voltage: {} mV", mv);
+        }
+        if let Some(ref pcie) = g.pcie_link {
+            println!("PCIe Link: {}", pcie);
+        }
     }
 }
 

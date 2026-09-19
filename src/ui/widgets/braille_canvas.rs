@@ -49,6 +49,7 @@ pub struct BrailleCanvas<'a> {
     max_value: f64,
     use_gradient: bool,
     baseline_color: Color,
+    single_color: Option<Color>,
 }
 
 impl<'a> BrailleCanvas<'a> {
@@ -58,6 +59,7 @@ impl<'a> BrailleCanvas<'a> {
             max_value: 100.0,
             use_gradient: true,
             baseline_color: Color::Rgb(45, 115, 75), // Subtle dimmed green baseline
+            single_color: None,
         }
     }
 
@@ -70,6 +72,12 @@ impl<'a> BrailleCanvas<'a> {
 
     pub fn baseline_color(mut self, color: Color) -> Self {
         self.baseline_color = color;
+        self
+    }
+
+    pub fn single_color(mut self, color: Color) -> Self {
+        self.single_color = Some(color);
+        self.use_gradient = false;
         self
     }
 
@@ -180,7 +188,7 @@ impl<'a> Widget for BrailleCanvas<'a> {
                 } else if self.use_gradient {
                     value_gradient_color(max_cell_frac * 100.0)
                 } else {
-                    Color::Rgb(50, 230, 120)
+                    self.single_color.unwrap_or(Color::Rgb(50, 230, 120))
                 };
 
                 let cell = &mut buf[(buf_x, buf_y)];

@@ -32,6 +32,10 @@ struct AmdCardPaths {
     mem_vendor_file: Option<PathBuf>,
     sclk_file: Option<PathBuf>,
     mclk_file: Option<PathBuf>,
+    fan_rpm_file: Option<PathBuf>,
+    voltage_file: Option<PathBuf>,
+    pcie_speed_file: Option<PathBuf>,
+    pcie_width_file: Option<PathBuf>,
 }
 
 impl AmdSysfsBackend {
@@ -88,6 +92,8 @@ impl AmdSysfsBackend {
             let mut power_file = None;
             let mut power_cap_file = None;
             let mut fan_pwm_file = None;
+            let mut fan_rpm_file = None;
+            let mut voltage_file = None;
 
             if let Some(ref hw_dir) = hwmon_dir {
                 // Discover temperature files
@@ -126,6 +132,16 @@ impl AmdSysfsBackend {
                 if pwm1.exists() {
                     fan_pwm_file = Some(pwm1);
                 }
+
+                let fan1_inp = hw_dir.join("fan1_input");
+                if fan1_inp.exists() {
+                    fan_rpm_file = Some(fan1_inp);
+                }
+
+                let in0_inp = hw_dir.join("in0_input");
+                if in0_inp.exists() {
+                    voltage_file = Some(in0_inp);
+                }
             }
 
             // Read PCI bus / device ID
@@ -163,6 +179,14 @@ impl AmdSysfsBackend {
                 let p = device_dir.join("pp_dpm_mclk");
                 if p.exists() { Some(p) } else { None }
             };
+            let pcie_speed_file = {
+                let p = device_dir.join("current_link_speed");
+                if p.exists() { Some(p) } else { None }
+            };
+            let pcie_width_file = {
+                let p = device_dir.join("current_link_width");
+                if p.exists() { Some(p) } else { None }
+            };
 
             cards.push(AmdCardPaths {
                 index: card_index,
@@ -183,6 +207,10 @@ impl AmdSysfsBackend {
                 mem_vendor_file,
                 sclk_file,
                 mclk_file,
+                fan_rpm_file,
+                voltage_file,
+                pcie_speed_file,
+                pcie_width_file,
             });
         }
 
@@ -277,6 +305,42 @@ impl GpuBackend for AmdSysfsBackend {
                 .as_ref()
                 .and_then(|p| parse_amd_dpm_mclk(p));
 
+            let fan_rpm = card
+                .fan_rpm_file
+                .as_ref()
+                .and_then(|p| read_u32_from_file(p));
+
+            let voltage_mv = card
+                .voltage_file
+                .as_ref()
+                .and_then(|p| read_u32_from_file(p));
+
+            let pcie_link = match (&card.pcie_speed_file, &card.pcie_width_file) {
+                (Some(sf), Some(wf)) => {
+                    let speed = fs::read_to_string(sf).ok().map(|s| s.trim().to_string()).unwrap_or_default();
+                    let width = fs::read_to_string(wf).ok().map(|s| s.trim().to_string()).unwrap_or_default();
+                    if !speed.is_empty() && !width.is_empty() {
+                        let gen = if speed.contains("16.0") {
+                            "Gen4"
+                        } else if speed.contains("8.0") {
+                            "Gen3"
+                        } else if speed.contains("32.0") {
+                            "Gen5"
+                        } else if speed.contains("5.0") {
+                            "Gen2"
+                        } else if speed.contains("2.5") {
+                            "Gen1"
+                        } else {
+                            speed.split_whitespace().next().unwrap_or(&speed)
+                        };
+                        Some(format!("{gen} x{width}"))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+
             let free_bytes = vram_total_bytes.saturating_sub(vram_used_bytes);
             let vram_breakdown = VramBreakdown {
                 weights_bytes: 0,
@@ -307,6 +371,9 @@ impl GpuBackend for AmdSysfsBackend {
                 sclk_mhz,
                 mclk_mhz,
                 mem_vendor,
+                fan_rpm,
+                voltage_mv,
+                pcie_link,
             });
         }
 
@@ -407,6 +474,9 @@ impl GpuBackend for NvidiaBackend {
                 sclk_mhz: None,
                 mclk_mhz: None,
                 mem_vendor: None,
+                fan_rpm: None,
+                voltage_mv: None,
+                pcie_link: None,
             });
         }
 

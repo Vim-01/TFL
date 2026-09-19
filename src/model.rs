@@ -201,6 +201,13 @@ pub struct GpuMetrics {
 
     /// Memory vendor (e.g. Samsung, Micron, Hynix)
     pub mem_vendor: Option<String>,
+
+    /// Real fan rotational speed in RPM
+    pub fan_rpm: Option<u32>,
+    /// Real core voltage in mV
+    pub voltage_mv: Option<u32>,
+    /// Real PCIe link status (e.g. "Gen4 x16")
+    pub pcie_link: Option<String>,
 }
 
 /// Status of an individual inference slot in llama.cpp / vLLM
