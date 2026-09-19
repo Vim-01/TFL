@@ -358,10 +358,11 @@ impl LlmCollector {
             .unwrap_or(8192)
             .max(1);
 
-        let total_slots = props
-            .as_ref()
-            .and_then(|p| p.total_slots)
-            .unwrap_or(raw_slots.len().max(1) as u32);
+        let total_slots = if !raw_slots.is_empty() {
+            (raw_slots.len() as u32).max(props.as_ref().and_then(|p| p.total_slots).unwrap_or(1))
+        } else {
+            props.as_ref().and_then(|p| p.total_slots).unwrap_or(1)
+        };
 
         // Extract cache quantization and draft model from /proc flags if available
         let proc_info = self.cached_proc_info.clone().unwrap_or_default();

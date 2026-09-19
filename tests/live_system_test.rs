@@ -160,3 +160,92 @@ async fn test_live_gpu_top_render() {
     println!("GpuTopView rendered: {non_empty_cells} active glyph cells");
     assert!(non_empty_cells > 50, "GpuTopView should render borders and process info");
 }
+
+#[tokio::test]
+async fn test_dynamic_slots_scaling() {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::Widget;
+    use tfl::app::App;
+    use tfl::model::{LlmMetrics, MetricUpdate, SlotInfo};
+    use tfl::ui::DashboardView;
+
+    let mut app = App::new();
+
+    // Create mock LLM with 4 slots
+    let mut slots = Vec::new();
+    for id in 0..4 {
+        slots.push(SlotInfo {
+            id,
+            id_task: Some(1000 + id as i64),
+            is_processing: id == 0 || id == 2,
+            n_ctx: 131072,
+            n_prompt_tokens: 1024,
+            n_prompt_tokens_processed: 1024,
+            n_prompt_tokens_cache: 512,
+            n_decoded: 42 * (id as u64 + 1),
+            speculative: true,
+            speculative_type: Some("draft-dspark".to_string()),
+            decode_tokens_per_sec: 35.0,
+            draft_acceptance_rate: Some(25.0),
+        });
+    }
+
+    let llm_metrics = LlmMetrics {
+        is_connected: true,
+        engine_name: "llama.cpp".to_string(),
+        endpoint_url: "http://127.0.0.1:8080".to_string(),
+        model_alias: "Qwen3.8-27B".to_string(),
+        model_path: "/models/qwen.gguf".to_string(),
+        model_ftype: "IQ3_S".to_string(),
+        context_window_max: 131072,
+        total_slots: 4,
+        active_slots: 2,
+        context_tokens_used: 4096,
+        cache_hit_rate_percent: 50.0,
+        kv_cache_pool_percent: 25.0,
+        cache_type_k: "q8_0".to_string(),
+        cache_type_v: "q8_0".to_string(),
+        speculative_draft_model: Some("DSpark".to_string()),
+        speculative_draft_quant: Some("Q8_0".to_string()),
+        speculative_type: Some("draft-dspark".to_string()),
+        speculative_acceptance_rate: Some(25.0),
+        instant_decode_tps: 35.0,
+        current_decode_tps: 35.0,
+        current_prefill_tps: 450.0,
+        peak_decode_tps: 65.0,
+        slots,
+        ..Default::default()
+    };
+
+    app.handle_metric_update(MetricUpdate::Llm(Box::new(llm_metrics)));
+
+    // Render dashboard with 4 slots on standard terminal (160x45)
+    let area = Rect::new(0, 0, 160, 45);
+    let mut buf = Buffer::empty(area);
+    let view = DashboardView::new(&app);
+    view.render(area, &mut buf);
+
+    // Check that Slot #0, #1, #2, #3 are rendered in the buffer
+    let mut found_slot_0 = false;
+    let mut found_slot_1 = false;
+    let mut found_slot_2 = false;
+    let mut found_slot_3 = false;
+
+    for y in 0..area.height {
+        let mut line_str = String::new();
+        for x in 0..area.width {
+            line_str.push_str(buf[(x, y)].symbol());
+        }
+        if line_str.contains("#0") { found_slot_0 = true; }
+        if line_str.contains("#1") { found_slot_1 = true; }
+        if line_str.contains("#2") { found_slot_2 = true; }
+        if line_str.contains("#3") { found_slot_3 = true; }
+    }
+
+    assert!(found_slot_0, "Slot #0 must be visible");
+    assert!(found_slot_1, "Slot #1 must be visible when scaled");
+    assert!(found_slot_2, "Slot #2 must be visible when scaled");
+    assert!(found_slot_3, "Slot #3 must be visible when scaled");
+    println!("Dynamic slots scaling verified: all 4 slots rendered successfully!");
+}

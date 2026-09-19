@@ -324,36 +324,68 @@ impl<'a> DashboardView<'a> {
 
         if let Some(g) = gpu {
             if right_inner.height >= 4 {
-                // Adapt layout dynamically based on available vertical rows
-                let right_chunks = if right_inner.height >= 7 {
-                    Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([
-                            Constraint::Length(1), // VRAM Header line
-                            Constraint::Length(1), // Full-width VRAM bar
-                            Constraint::Min(3),    // Middle: Full-width horizontal thermals + Vertical gauges
-                            Constraint::Length(1), // Bottom: Clocks & Voltage
-                            Constraint::Length(1), // Bottom: PCIe & Driver info
-                        ])
-                        .split(right_inner)
+                // Adapt layout dynamically based on available vertical rows, with a clean spacer between VRAM and Thermals
+                let (right_chunks, middle_idx, clock_idx, pcie_idx) = if right_inner.height >= 8 {
+                    (
+                        Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints([
+                                Constraint::Length(1), // [0] VRAM Header line
+                                Constraint::Length(1), // [1] Full-width VRAM bar
+                                Constraint::Length(1), // [2] Spacer between VRAM and Thermals
+                                Constraint::Min(3),    // [3] Middle: Thermals & Gauges
+                                Constraint::Length(1), // [4] Bottom: Clocks & Voltage
+                                Constraint::Length(1), // [5] Bottom: PCIe & Driver info
+                            ])
+                            .split(right_inner),
+                        3,
+                        Some(4),
+                        Some(5),
+                    )
+                } else if right_inner.height >= 7 {
+                    (
+                        Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints([
+                                Constraint::Length(1), // [0] VRAM Header line
+                                Constraint::Length(1), // [1] Full-width VRAM bar
+                                Constraint::Length(1), // [2] Spacer between VRAM and Thermals
+                                Constraint::Min(3),    // [3] Middle: Thermals & Gauges
+                                Constraint::Length(1), // [4] Bottom: Clocks & Voltage
+                            ])
+                            .split(right_inner),
+                        3,
+                        Some(4),
+                        None,
+                    )
                 } else if right_inner.height >= 5 {
-                    Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([
-                            Constraint::Length(1), // VRAM Header line
-                            Constraint::Length(1), // Full-width VRAM bar
-                            Constraint::Min(2),    // Middle: Thermals & Gauges
-                            Constraint::Length(1), // Bottom: Clocks & Voltage
-                        ])
-                        .split(right_inner)
+                    (
+                        Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints([
+                                Constraint::Length(1), // [0] VRAM Header line
+                                Constraint::Length(1), // [1] Full-width VRAM bar
+                                Constraint::Min(2),    // [2] Middle: Thermals & Gauges
+                                Constraint::Length(1), // [3] Bottom: Clocks & Voltage
+                            ])
+                            .split(right_inner),
+                        2,
+                        Some(3),
+                        None,
+                    )
                 } else {
-                    Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([
-                            Constraint::Length(1), // VRAM Header line
-                            Constraint::Min(2),    // Middle
-                        ])
-                        .split(right_inner)
+                    (
+                        Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints([
+                                Constraint::Length(1), // [0] VRAM Header line
+                                Constraint::Min(2),    // [1] Middle
+                            ])
+                            .split(right_inner),
+                        1,
+                        None,
+                        None,
+                    )
                 };
 
                 // 1. VRAM Header
@@ -379,7 +411,7 @@ impl<'a> DashboardView<'a> {
                         Constraint::Min(16),    // Horizontal Thermals and PWR
                         Constraint::Length(10), // Vertical FAN and HOTSPOT
                     ])
-                    .split(right_chunks[2]);
+                    .split(right_chunks[middle_idx]);
 
                 let temp_edge = g.temp_edge_c.unwrap_or(0.0);
                 let temp_hot = g.temp_hotspot_c.unwrap_or(0.0);
@@ -475,48 +507,52 @@ impl<'a> DashboardView<'a> {
                     .dim_color(theme.bar_track)
                     .render(vert_cols[1], buf);
 
-                // 4. Clocks & Voltage Line (Guarded by chunk height)
-                if right_chunks.len() > 3 && right_chunks[3].height > 0 {
-                    let mut clk_spans = vec![
-                        Span::styled("Clocks: ", Style::default().fg(theme.fg_dim)),
-                        Span::styled(format!("SCLK {sclk}MHz "), Style::default().fg(theme.spark_compute).add_modifier(Modifier::BOLD)),
-                        Span::styled(format!("| MCLK {mclk}MHz "), Style::default().fg(theme.spark_mem).add_modifier(Modifier::BOLD)),
-                    ];
-                    if let Some(mv) = g.voltage_mv {
-                        clk_spans.push(Span::styled(format!("| VDD: {mv}mV"), Style::default().fg(theme.fg_dim)));
+                // 4. Clocks & Voltage Line (Guarded by clock_idx)
+                if let Some(c_idx) = clock_idx {
+                    if c_idx < right_chunks.len() && right_chunks[c_idx].height > 0 {
+                        let mut clk_spans = vec![
+                            Span::styled("Clocks: ", Style::default().fg(theme.fg_dim)),
+                            Span::styled(format!("SCLK {sclk}MHz "), Style::default().fg(theme.spark_compute).add_modifier(Modifier::BOLD)),
+                            Span::styled(format!("| MCLK {mclk}MHz "), Style::default().fg(theme.spark_mem).add_modifier(Modifier::BOLD)),
+                        ];
+                        if let Some(mv) = g.voltage_mv {
+                            clk_spans.push(Span::styled(format!("| VDD: {mv}mV"), Style::default().fg(theme.fg_dim)));
+                        }
+                        let clk_line = Line::from(clk_spans);
+                        buf.set_line(right_chunks[c_idx].x, right_chunks[c_idx].y, &clk_line, right_chunks[c_idx].width);
                     }
-                    let clk_line = Line::from(clk_spans);
-                    buf.set_line(right_chunks[3].x, right_chunks[3].y, &clk_line, right_chunks[3].width);
                 }
 
-                // 5. PCIe, Fan & Driver Telemetry Line (Guarded by chunk height)
-                if right_chunks.len() > 4 && right_chunks[4].height > 0 {
-                    let mut pcie_spans = Vec::new();
-                    if let Some(ref pcie) = g.pcie_link {
-                        pcie_spans.push(Span::styled("PCIe: ", Style::default().fg(theme.fg_dim)));
-                        pcie_spans.push(Span::styled(format!("{pcie}  "), Style::default().fg(theme.fg)));
-                    } else {
-                        pcie_spans.push(Span::styled("PCI: ", Style::default().fg(theme.fg_dim)));
-                        pcie_spans.push(Span::styled(format!("{}  ", g.pci_bus_id), Style::default().fg(theme.fg)));
+                // 5. PCIe, Fan & Driver Telemetry Line (Guarded by pcie_idx)
+                if let Some(p_idx) = pcie_idx {
+                    if p_idx < right_chunks.len() && right_chunks[p_idx].height > 0 {
+                        let mut pcie_spans = Vec::new();
+                        if let Some(ref pcie) = g.pcie_link {
+                            pcie_spans.push(Span::styled("PCIe: ", Style::default().fg(theme.fg_dim)));
+                            pcie_spans.push(Span::styled(format!("{pcie}  "), Style::default().fg(theme.fg)));
+                        } else {
+                            pcie_spans.push(Span::styled("PCI: ", Style::default().fg(theme.fg_dim)));
+                            pcie_spans.push(Span::styled(format!("{}  ", g.pci_bus_id), Style::default().fg(theme.fg)));
+                        }
+
+                        pcie_spans.push(Span::styled("Fan: ", Style::default().fg(theme.fg_dim)));
+                        if let Some(rpm) = g.fan_rpm {
+                            pcie_spans.push(Span::styled(format!("{fan_pct:.0}% ({rpm} RPM)  "), Style::default().fg(theme.fg)));
+                        } else {
+                            pcie_spans.push(Span::styled(format!("{fan_pct:.0}%  "), Style::default().fg(theme.fg)));
+                        }
+
+                        let driver_label = if g.driver_version.is_empty() {
+                            g.vendor.as_str().to_string()
+                        } else {
+                            format!("{}/{}", g.vendor.as_str(), g.driver_version)
+                        };
+                        pcie_spans.push(Span::styled("Driver: ", Style::default().fg(theme.fg_dim)));
+                        pcie_spans.push(Span::styled(driver_label, Style::default().fg(theme.fg)));
+
+                        let pcie_line = Line::from(pcie_spans);
+                        buf.set_line(right_chunks[p_idx].x, right_chunks[p_idx].y, &pcie_line, right_chunks[p_idx].width);
                     }
-
-                    pcie_spans.push(Span::styled("Fan: ", Style::default().fg(theme.fg_dim)));
-                    if let Some(rpm) = g.fan_rpm {
-                        pcie_spans.push(Span::styled(format!("{fan_pct:.0}% ({rpm} RPM)  "), Style::default().fg(theme.fg)));
-                    } else {
-                        pcie_spans.push(Span::styled(format!("{fan_pct:.0}%  "), Style::default().fg(theme.fg)));
-                    }
-
-                    let driver_label = if g.driver_version.is_empty() {
-                        g.vendor.as_str().to_string()
-                    } else {
-                        format!("{}/{}", g.vendor.as_str(), g.driver_version)
-                    };
-                    pcie_spans.push(Span::styled("Driver: ", Style::default().fg(theme.fg_dim)));
-                    pcie_spans.push(Span::styled(driver_label, Style::default().fg(theme.fg)));
-
-                    let pcie_line = Line::from(pcie_spans);
-                    buf.set_line(right_chunks[4].x, right_chunks[4].y, &pcie_line, right_chunks[4].width);
                 }
             }
         }
@@ -693,7 +729,15 @@ impl<'a> DashboardView<'a> {
 
         let mut rows = Vec::new();
         if let Some(l) = llm {
-            for (i, slot) in l.slots.iter().enumerate() {
+            let inner_height = inner.height.saturating_sub(1) as usize;
+            let selected = self.app.selected_slot_index.min(l.slots.len().saturating_sub(1));
+            let scroll_offset = if selected >= inner_height && inner_height > 0 {
+                selected.saturating_sub(inner_height.saturating_sub(1))
+            } else {
+                0
+            };
+
+            for (i, slot) in l.slots.iter().enumerate().skip(scroll_offset).take(inner_height) {
                 let is_selected = i == self.app.selected_slot_index;
                 let cursor = if is_selected { "▶" } else { " " };
 
@@ -934,11 +978,17 @@ impl<'a> Widget for DashboardView<'a> {
         self.render_llm_panel(tier3_cols[0], buf);
 
         if tier3_cols[1].height >= 6 {
+            let num_slots = self.app.llm.as_ref().map(|l| l.slots.len().max(1)).unwrap_or(1) as u16;
+            // Slots box needs: 1 top border + 1 header + N slots + 1 bottom border = N + 3
+            // Reserve at least 4 rows for GPU Top so its header and top process remain visible
+            let max_slots_h = tier3_cols[1].height.saturating_sub(4).max(3);
+            let slots_h = (num_slots + 3).min(max_slots_h).max(4);
+
             let right_sub = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(4), // Slots table: 1 title border + 1 header + 1 slot + 1 bottom border
-                    Constraint::Min(3),    // GPU Top table
+                    Constraint::Length(slots_h), // Scales dynamically with number of slots!
+                    Constraint::Min(3),          // GPU Top table
                 ])
                 .split(tier3_cols[1]);
 

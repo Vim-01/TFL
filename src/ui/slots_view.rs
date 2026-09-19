@@ -99,7 +99,15 @@ impl<'a> Widget for SlotsDetailsView<'a> {
         .style(Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD));
 
         let mut rows = Vec::new();
-        for (i, slot) in llm.slots.iter().enumerate() {
+        let table_inner_height = chunks[1].height.saturating_sub(1) as usize;
+        let selected = self.app.selected_slot_index.min(llm.slots.len().saturating_sub(1));
+        let scroll_offset = if selected >= table_inner_height && table_inner_height > 0 {
+            selected.saturating_sub(table_inner_height.saturating_sub(1))
+        } else {
+            0
+        };
+
+        for (i, slot) in llm.slots.iter().enumerate().skip(scroll_offset).take(table_inner_height) {
             let is_selected = i == self.app.selected_slot_index;
             let (state_str, state_color) = if slot.is_processing {
                 ("Generating", theme.status_online)
