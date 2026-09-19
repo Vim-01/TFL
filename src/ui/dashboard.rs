@@ -684,6 +684,10 @@ impl<'a> DashboardView<'a> {
         let inner = block.inner(area);
         block.render(area, buf);
 
+        if inner.height == 0 || inner.width < 10 {
+            return;
+        }
+
         let header = Row::new(vec!["Slot", "Task", "Status", "Prompt", "Dec", "MTP%", "Mode"])
             .style(Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD));
 
@@ -762,6 +766,92 @@ impl<'a> DashboardView<'a> {
 
         table.render(inner, buf);
     }
+
+    // ------------------------------------------------------------------------
+    // Panel 5: GPU TOP (Real-time DRM / GPU Process Client Monitor)
+    // ------------------------------------------------------------------------
+    fn render_gpu_top_panel(&self, area: Rect, buf: &mut Buffer) {
+        let theme = &self.app.theme;
+        let gpu = self.app.gpus.first();
+        let processes = gpu.map(|g| &g.processes[..]).unwrap_or(&[]);
+
+        let title = Line::from(vec![
+            Span::styled("┌3gputop", Style::default().fg(theme.box_gpu).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("───GPU Top ({} procs)─────────────", processes.len()), Style::default().fg(theme.box_gpu)),
+        ]);
+
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(theme.box_gpu));
+
+        let inner = block.inner(area);
+        block.render(area, buf);
+
+        if inner.height < 2 || inner.width < 15 {
+            return;
+        }
+
+        let header = Row::new(vec!["PID", "Process", "VRAM", "GTT", "%VRAM"])
+            .style(Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD));
+
+        let mut rows = Vec::new();
+        let max_procs = (inner.height.saturating_sub(1)) as usize;
+        for p in processes.iter().take(max_procs) {
+            let is_llama = p.name.to_lowercase().contains("llama");
+            let row_style = if is_llama {
+                Style::default().fg(theme.spark_compute).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.fg)
+            };
+
+            let vram_str = if p.vram_bytes >= 1024 * 1024 * 1024 {
+                format!("{:.1} GiB", p.vram_bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+            } else {
+                format!("{:.0} MiB", p.vram_bytes as f64 / (1024.0 * 1024.0))
+            };
+
+            let gtt_str = if p.gtt_bytes >= 1024 * 1024 * 1024 {
+                format!("{:.1} GiB", p.gtt_bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+            } else {
+                format!("{:.0} MiB", p.gtt_bytes as f64 / (1024.0 * 1024.0))
+            };
+
+            rows.push(Row::new(vec![
+                Line::from(p.pid.to_string()),
+                Line::from(p.name.clone()),
+                Line::from(vram_str),
+                Line::from(gtt_str),
+                Line::from(format!("{:.0}%", p.vram_percent)),
+            ]).style(row_style));
+        }
+
+        if rows.is_empty() {
+            rows.push(Row::new(vec![
+                Line::from("—"),
+                Line::from("No GPU clients"),
+                Line::from("0 MiB"),
+                Line::from("0 MiB"),
+                Line::from("0%"),
+            ]).style(Style::default().fg(theme.fg_dim)));
+        }
+
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Length(7),
+                Constraint::Min(10),
+                Constraint::Length(10),
+                Constraint::Length(9),
+                Constraint::Length(6),
+            ],
+        )
+        .header(header)
+        .column_spacing(1);
+
+        table.render(inner, buf);
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -817,7 +907,7 @@ impl<'a> Widget for DashboardView<'a> {
         // Divide dashboard into 3 tiers:
         // Tier 1: CPU Panel (~33%)
         // Tier 2: GPU Panel (~33%)
-        // Tier 3: LLM & Slots Row (~34%) with 62/38 horizontal split
+        // Tier 3: LLM & Compressed Slots / GPU Top Row (~34%)
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -833,13 +923,27 @@ impl<'a> Widget for DashboardView<'a> {
         // 2. GPU Panel (3-way split inside)
         self.render_gpu_panel(rows[1], buf);
 
-        // 3. LLM & Compressed Slots Row
+        // 3. LLM & Compressed Slots / GPU Top Row
         let tier3_cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
             .split(rows[2]);
 
         self.render_llm_panel(tier3_cols[0], buf);
-        self.render_slots_panel(tier3_cols[1], buf);
+
+        if tier3_cols[1].height >= 6 {
+            let right_sub = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(4), // Slots table: 1 title border + 1 header + 1 slot + 1 bottom border
+                    Constraint::Min(3),    // GPU Top table
+                ])
+                .split(tier3_cols[1]);
+
+            self.render_slots_panel(right_sub[0], buf);
+            self.render_gpu_top_panel(right_sub[1], buf);
+        } else {
+            self.render_slots_panel(tier3_cols[1], buf);
+        }
     }
 }

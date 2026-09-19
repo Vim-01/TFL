@@ -84,26 +84,30 @@ impl LlamaLogTailer {
                     self.last_offset = 0;
                 }
 
-                let to_read = (file_len.saturating_sub(self.last_offset)).min(65536) as usize;
-                if to_read > 0 && file.seek(SeekFrom::Start(self.last_offset)).is_ok() {
+                while self.last_offset < file_len {
+                    let to_read = (file_len - self.last_offset).min(65536) as usize;
+                    if to_read == 0 || file.seek(SeekFrom::Start(self.last_offset)).is_err() {
+                        break;
+                    }
                     let mut buffer = vec![0_u8; to_read];
-                    if file.read_exact(&mut buffer).is_ok() {
-                        self.last_offset = self.last_offset.saturating_add(to_read as u64);
-                        let text = String::from_utf8_lossy(&buffer);
-                        for line in text.lines() {
-                            parse_llama_log_line(
-                                line,
-                                &mut self.last_mtp_rate,
-                                &mut self.last_mtp_accepted,
-                                &mut self.last_mtp_generated,
-                                &mut self.last_mtp_mean_len,
-                                &mut self.last_eval_tps,
-                                &mut self.last_prompt_tps,
-                            );
-                            if let Some(tps) = self.last_eval_tps {
-                                if tps > self.peak_decode_tps {
-                                    self.peak_decode_tps = tps;
-                                }
+                    if file.read_exact(&mut buffer).is_err() {
+                        break;
+                    }
+                    self.last_offset = self.last_offset.saturating_add(to_read as u64);
+                    let text = String::from_utf8_lossy(&buffer);
+                    for line in text.lines() {
+                        parse_llama_log_line(
+                            line,
+                            &mut self.last_mtp_rate,
+                            &mut self.last_mtp_accepted,
+                            &mut self.last_mtp_generated,
+                            &mut self.last_mtp_mean_len,
+                            &mut self.last_eval_tps,
+                            &mut self.last_prompt_tps,
+                        );
+                        if let Some(tps) = self.last_eval_tps {
+                            if tps > self.peak_decode_tps {
+                                self.peak_decode_tps = tps;
                             }
                         }
                     }
@@ -171,6 +175,17 @@ fn parse_llama_log_line(
             let before = &line[..tps_idx];
             if let Some(last_comma) = before.rfind(',') {
                 let num_str = before[last_comma + 1..].trim();
+                if let Ok(tps) = num_str.parse::<f32>() {
+                    *eval_tps = Some(tps);
+                }
+            }
+        }
+    } else if line.contains("tg =") && line.contains("t/s") {
+        // Intermediate decoding speed while task is processing: e.g. "n_gen = 131, tg =  42.80 t/s, tg_3s =  43.13 t/s"
+        if let Some(tg_pos) = line.find("tg =") {
+            let rest = &line[tg_pos + "tg =".len()..];
+            if let Some(end) = rest.find("t/s") {
+                let num_str = rest[..end].trim();
                 if let Ok(tps) = num_str.parse::<f32>() {
                     *eval_tps = Some(tps);
                 }
@@ -459,6 +474,16 @@ impl LlmCollector {
             (0.0, 0.0)
         };
 
+        let any_slot_processing = slot_infos.iter().any(|s| s.is_processing);
+
+        let instant_decode_tps = if current_decode_tps > 0.0 {
+            current_decode_tps
+        } else if any_slot_processing {
+            self.log_tailer.last_eval_tps.unwrap_or(0.0)
+        } else {
+            0.0
+        };
+
         let final_decode_tps = if current_decode_tps > 0.0 {
             current_decode_tps
         } else {
@@ -518,6 +543,7 @@ impl LlmCollector {
             cache_hit_rate_percent,
             current_prefill_tps: final_prefill_tps,
             current_decode_tps: final_decode_tps,
+            instant_decode_tps,
             peak_decode_tps,
             time_to_first_token_ms: None,
             inter_token_latency_ms: None,

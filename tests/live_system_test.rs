@@ -48,6 +48,11 @@ async fn test_live_gpu_collector() {
         if let Some(ref pcie) = g.pcie_link {
             println!("PCIe Link: {}", pcie);
         }
+        println!("GPU Processes: {} found", g.processes.len());
+        for p in g.processes.iter().take(5) {
+            println!("  - PID {}: {} | VRAM: {:.1} MiB ({:.0}%) | GTT: {:.1} MiB",
+                p.pid, p.name, p.vram_bytes as f64 / (1024.0 * 1024.0), p.vram_percent, p.gtt_bytes as f64 / (1024.0 * 1024.0));
+        }
     }
 }
 

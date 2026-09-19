@@ -148,7 +148,7 @@ impl App {
                 self.gpus = gpus;
             }
             MetricUpdate::Llm(llm) => {
-                let dec_tps = llm.current_decode_tps as f64;
+                let dec_tps = llm.instant_decode_tps as f64;
                 let prf_tps = llm.current_prefill_tps as f64;
                 if dec_tps.is_finite() {
                     self.decode_tps_history.push(dec_tps);
@@ -214,11 +214,15 @@ impl App {
             1 => self.toggle_solid_background(),
             2 => {
                 let current = self.poll_interval_ms();
-                let next = match current {
-                    2000 => 1000,
-                    1000 => 500,
-                    500 => 250,
-                    _ => 2000,
+                const PRESETS: [u64; 10] = [100, 200, 250, 500, 750, 1000, 1500, 2000, 3000, 5000];
+                let next = if let Some(idx) = PRESETS.iter().position(|&x| x == current) {
+                    if idx == 0 {
+                        PRESETS[PRESETS.len() - 1]
+                    } else {
+                        PRESETS[idx - 1]
+                    }
+                } else {
+                    current.saturating_sub(100).clamp(100, 5000)
                 };
                 self.set_poll_interval(next);
             }
@@ -233,11 +237,15 @@ impl App {
             1 => self.toggle_solid_background(),
             2 => {
                 let current = self.poll_interval_ms();
-                let next = match current {
-                    250 => 500,
-                    500 => 1000,
-                    1000 => 2000,
-                    _ => 250,
+                const PRESETS: [u64; 10] = [100, 200, 250, 500, 750, 1000, 1500, 2000, 3000, 5000];
+                let next = if let Some(idx) = PRESETS.iter().position(|&x| x == current) {
+                    if idx + 1 >= PRESETS.len() {
+                        PRESETS[0]
+                    } else {
+                        PRESETS[idx + 1]
+                    }
+                } else {
+                    (current + 100).clamp(100, 5000)
                 };
                 self.set_poll_interval(next);
             }

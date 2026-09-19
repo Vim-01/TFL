@@ -88,7 +88,7 @@ impl<'a> Widget for OptionsModal<'a> {
             ),
             (
                 "Poll Interval",
-                format!("{} ms", self.app.poll_interval_ms()),
+                format!("{} ms (100-5000)", self.app.poll_interval_ms()),
             ),
             (
                 "Active View",

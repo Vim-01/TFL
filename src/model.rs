@@ -208,6 +208,19 @@ pub struct GpuMetrics {
     pub voltage_mv: Option<u32>,
     /// Real PCIe link status (e.g. "Gen4 x16")
     pub pcie_link: Option<String>,
+
+    /// Processes currently using this GPU
+    pub processes: Vec<GpuProcessInfo>,
+}
+
+/// Information about a process utilizing GPU resources (VRAM, GTT, Compute)
+#[derive(Debug, Clone, Default)]
+pub struct GpuProcessInfo {
+    pub pid: u32,
+    pub name: String,
+    pub vram_bytes: u64,
+    pub gtt_bytes: u64,
+    pub vram_percent: f32,
 }
 
 /// Status of an individual inference slot in llama.cpp / vLLM
@@ -284,6 +297,7 @@ pub struct LlmMetrics {
     /// Real-time throughput metrics
     pub current_prefill_tps: f32,
     pub current_decode_tps: f32,
+    pub instant_decode_tps: f32,
     pub peak_decode_tps: f32,
 
     /// Latencies

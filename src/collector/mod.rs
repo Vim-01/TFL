@@ -8,6 +8,7 @@ use tokio::task::JoinHandle;
 
 pub mod cpu;
 pub mod gpu;
+pub mod gpu_process;
 pub mod llm;
 
 use std::sync::atomic::{AtomicU64, Ordering};

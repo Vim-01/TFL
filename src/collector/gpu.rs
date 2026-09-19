@@ -374,6 +374,7 @@ impl GpuBackend for AmdSysfsBackend {
                 fan_rpm,
                 voltage_mv,
                 pcie_link,
+                processes: super::gpu_process::collect_drm_gpu_processes(vram_total_bytes),
             });
         }
 
@@ -477,6 +478,7 @@ impl GpuBackend for NvidiaBackend {
                 fan_rpm: None,
                 voltage_mv: None,
                 pcie_link: None,
+                processes: Vec::new(),
             });
         }
 
