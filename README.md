@@ -37,22 +37,25 @@ TFL объединяет функционал `btop`, `nvidia-smi` / `rocm-smi` 
 
 ## 📦 Установка
 
-### Для Arch Linux (AUR)
-*(Пакет в процессе публикации)*
+### Для Arch Linux (Сборка из PKGBUILD)
+*(Пакет ожидает открытия регистрации для публикации в AUR. Пока доступна локальная сборка)*
 ```bash
-yay -S tfl
+git clone https://github.com/Vim-01/TFL.git
+cd TFL/packaging/aur
+makepkg -si
 ```
 
-### Сборка из исходников (Все дистрибутивы)
-Убедитесь, что у вас установлен [Rust](https://rustup.rs/):
+### Установка через Cargo (Любой Linux)
+Если у вас установлен [Rust](https://rustup.rs/):
 ```bash
-git clone https://github.com/YOUR_USERNAME/tfl.git
-cd tfl
-cargo build --release
+cargo install --git https://github.com/Vim-01/TFL.git
 ```
-Исполняемый файл будет лежить в `target/release/tfl`. 
-Можно скопировать его в `/usr/local/bin`:
+
+### Сборка из исходников вручную
 ```bash
+git clone https://github.com/Vim-01/TFL.git
+cd TFL
+cargo build --release
 sudo cp target/release/tfl /usr/local/bin/
 ```
 
