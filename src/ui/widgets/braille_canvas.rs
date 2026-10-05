@@ -116,23 +116,22 @@ impl<'a> Widget for BrailleCanvas<'a> {
             return;
         }
 
-        // Resample / stretch data across 100% of total_dot_cols to eliminate empty gaps on the left
+        // 1-to-1 discrete right-aligned timeline mapping:
+        // Rightmost column (total_dot_cols - 1) displays the latest sample (data.last()).
+        // Older samples flow to the left: column (total_dot_cols - 2) gets the sample before that, etc.
+        // This ensures that as time advances and new samples are pushed, the heights of existing
+        // columns remain completely static and move 1 dot column to the left with zero fractional
+        // interpolation jitter (eliminating the issue where steady values jumped between 49 and 52).
         let mut dot_heights = vec![0_usize; total_dot_cols];
         let data_len = self.data.len();
 
         for (i, slot) in dot_heights.iter_mut().enumerate() {
-            let val = if data_len == 0 {
-                0.0
-            } else if data_len == 1 {
-                self.data[0]
+            // Distance from right edge (0 is rightmost column)
+            let rev_col = total_dot_cols - 1 - i;
+            let val = if rev_col < data_len {
+                self.data[data_len - 1 - rev_col]
             } else {
-                let data_pos = (i as f64 / (total_dot_cols - 1) as f64) * (data_len - 1) as f64;
-                let idx0 = (data_pos.floor() as usize).min(data_len - 1);
-                let idx1 = (idx0 + 1).min(data_len - 1);
-                let t = data_pos - idx0 as f64;
-                let v0 = self.data[idx0];
-                let v1 = self.data[idx1];
-                v0 + (v1 - v0) * t
+                0.0
             };
 
             if val.is_finite() && val > 0.0 {

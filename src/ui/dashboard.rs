@@ -61,20 +61,25 @@ impl<'a> DashboardView<'a> {
         // Split: Left = Full-height 2D Braille history graph (Area 1); Right = Compact btop-style cores sub-box (Area 3)
         let cols = Layout::default()
             .direction(Direction::Horizontal)
+            .spacing(1)
             .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
             .split(inner);
 
         // --- Left: Full-height 2D Braille Canvas (Area 1) ---
-        // Clean single title without duplicate load averages (addressed user request #1)
         let left_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Min(2)])
             .split(cols[0]);
 
+        let avg_1m = self.app.cpu_avg_1m();
+        let avg_15m = self.app.cpu_avg_15m();
+        let avg_all = self.app.cpu_avg_all_time();
+
         let chart_title = Line::from(vec![
             Span::styled("CPU Total Load: ", Style::default().fg(theme.fg_dim)),
             Span::styled(format!("{global_usage:.1}%  "), Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("| Avg: {avg_freq:.2} GHz  | Package: {cpu_pwr:.1}W  {cpu_temp:.0}°C"), Style::default().fg(theme.fg_dim)),
+            Span::styled(format!("avg 1m: {avg_1m:.1}% / 15m: {avg_15m:.1}% / all: {avg_all:.1}%  "), Style::default().fg(theme.fg_dim)),
+            Span::styled(format!("| {avg_freq:.2} GHz | {cpu_pwr:.1}W {cpu_temp:.0}°C"), Style::default().fg(theme.fg_dim)),
         ]);
         buf.set_line(left_chunks[0].x, left_chunks[0].y, &chart_title, left_chunks[0].width);
 
@@ -86,12 +91,21 @@ impl<'a> DashboardView<'a> {
             .render(left_chunks[1], buf);
 
         // --- Right: Compact btop-style Cores & System Sub-box (Area 3) ---
+        let cores_load_color = if global_usage < 40.0 {
+            theme.temp_cool
+        } else if global_usage < 75.0 {
+            theme.temp_warm
+        } else {
+            theme.temp_hot
+        };
+
         let cores_block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Plain)
             .border_style(Style::default().fg(theme.fg_dim))
             .title(Line::from(vec![
                 Span::styled(" Cores & Package ", Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("[Load: {global_usage:.0}%] "), Style::default().fg(cores_load_color).add_modifier(Modifier::BOLD)),
             ]));
 
         let cores_inner = cores_block.inner(cols[1]);
@@ -103,20 +117,22 @@ impl<'a> DashboardView<'a> {
                 let sub_chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
-                        Constraint::Length(1), // Header info (Model, Clock, Watts)
+                        Constraint::Length(1), // Header info (Model, Clock, Watts, Load %)
                         Constraint::Length(1), // Horizontal CPU temperature gauge spanning full width
                         Constraint::Min(2),    // Cores Grid (4 cols x 3 rows)
                         Constraint::Length(1), // Memory / Load avg / Uptime
                     ])
                     .split(cores_inner);
 
-                // Sub-header (addressed user request #1)
+                // Sub-header with explicit Load % indicator
                 let ram_used = cpu.ram_used_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
                 let ram_total = cpu.ram_total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
                 let ram_pct = if ram_total > 0.0 { (ram_used / ram_total * 100.0) as u16 } else { 0 };
 
                 let sub_title = Line::from(vec![
                     Span::styled(format!("{cpu_brand} "), Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)),
+                    Span::styled("Load: ", Style::default().fg(theme.fg_dim)),
+                    Span::styled(format!("{global_usage:>3.0}%  "), Style::default().fg(cores_load_color).add_modifier(Modifier::BOLD)),
                     Span::styled(format!("[{avg_freq:.2} GHz]  "), Style::default().fg(theme.fg_dim)),
                     Span::styled(format!("PWR: {cpu_pwr:.1}W"), Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
                 ]);
@@ -136,7 +152,7 @@ impl<'a> DashboardView<'a> {
                 ]);
                 buf.set_line(sub_chunks[1].x, sub_chunks[1].y, &temp_line, sub_chunks[1].width);
 
-                // Multi-column Core Grid with Braille Dot Bars
+                // Multi-column Core Grid with smooth rectangular solid bar filling matching cpu temp
                 let num_cols = if sub_chunks[2].width >= 48 { 4 } else { 3 };
                 let num_rows = num_cores.div_ceil(num_cols);
                 let col_width = sub_chunks[2].width / num_cols as u16;
@@ -162,13 +178,15 @@ impl<'a> DashboardView<'a> {
                         let y = sub_chunks[2].y + r as u16;
 
                         if y < sub_chunks[2].y + sub_chunks[2].height {
-                            let (bar_filled, bar_empty) = core_dot_bar(usage_clamped, 3);
+                            // Dynamic bar length matching rectangular_bar style (█ and ░)
+                            let core_bar_len = (col_width as usize).saturating_sub(9).clamp(3, 10);
+                            let (bar_filled, bar_empty) = rectangular_bar(usage_clamped, 100.0, core_bar_len);
 
                             let core_line = Line::from(vec![
                                 Span::styled(format!("C{core_idx:<2}:"), Style::default().fg(theme.fg_dim)),
                                 Span::styled(bar_filled, Style::default().fg(bar_color)),
                                 Span::styled(bar_empty, Style::default().fg(theme.bar_track)),
-                                Span::styled(format!("{usage_clamped:>3.0}% "), Style::default().fg(theme.fg)),
+                                Span::styled(format!(" {usage_clamped:>3.0}%"), Style::default().fg(theme.fg)),
                             ]);
                             buf.set_line(x, y, &core_line, col_width);
                         }
@@ -233,6 +251,7 @@ impl<'a> DashboardView<'a> {
         // Col 3 (2): VRAM, Full-Width Thermals, PWR Gradient, Clocks, PCIe, Vertical Fan/Hotspot
         let cols = Layout::default()
             .direction(Direction::Horizontal)
+            .spacing(1)
             .constraints([
                 Constraint::Ratio(1, 3),
                 Constraint::Ratio(1, 3),
@@ -904,20 +923,6 @@ impl<'a> DashboardView<'a> {
 // Helper formatting functions
 // ----------------------------------------------------------------------------
 
-fn core_dot_bar(usage: f32, length: usize) -> (String, String) {
-    let frac = (usage / 100.0).clamp(0.0, 1.0);
-    let total_dots = length * 2;
-    let filled_dots = (frac * total_dots as f32).round() as usize;
-    let full_chars = filled_dots / 2;
-    let has_half = !filled_dots.is_multiple_of(2);
-    let mut filled_str = "⣿".repeat(full_chars);
-    if has_half {
-        filled_str.push('⡇');
-    }
-    let empty_len = length.saturating_sub(filled_str.chars().count());
-    let empty_str = "⣀".repeat(empty_len);
-    (filled_str, empty_str)
-}
 
 fn rectangular_bar(val: f32, max_val: f32, length: usize) -> (String, String) {
     let frac = if max_val > 0.0 { (val / max_val).clamp(0.0, 1.0) } else { 0.0 };
@@ -950,18 +955,27 @@ fn format_uptime(seconds: u64) -> String {
 
 impl<'a> Widget for DashboardView<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Divide dashboard into 3 tiers:
-        // Tier 1: CPU Panel (~33%)
-        // Tier 2: GPU Panel (~33%)
-        // Tier 3: LLM & Compressed Slots / GPU Top Row (~34%)
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage(33),
-                Constraint::Percentage(33),
-                Constraint::Percentage(34),
-            ])
-            .split(area);
+        // Divide dashboard into 3 tiers with vertical spacing so blocks do not fuse together
+        let rows = if area.height >= 20 {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .spacing(1)
+                .constraints([
+                    Constraint::Ratio(1, 3),
+                    Constraint::Ratio(1, 3),
+                    Constraint::Ratio(1, 3),
+                ])
+                .split(area)
+        } else {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Ratio(1, 3),
+                    Constraint::Ratio(1, 3),
+                    Constraint::Ratio(1, 3),
+                ])
+                .split(area)
+        };
 
         // 1. CPU Panel
         self.render_cpu_panel(rows[0], buf);
@@ -969,10 +983,11 @@ impl<'a> Widget for DashboardView<'a> {
         // 2. GPU Panel (3-way split inside)
         self.render_gpu_panel(rows[1], buf);
 
-        // 3. LLM & Compressed Slots / GPU Top Row
+        // 3. LLM & Compressed Slots / GPU Top Row with horizontal spacing
         let tier3_cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .spacing(1)
+            .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
             .split(rows[2]);
 
         self.render_llm_panel(tier3_cols[0], buf);
@@ -986,6 +1001,7 @@ impl<'a> Widget for DashboardView<'a> {
 
             let right_sub = Layout::default()
                 .direction(Direction::Vertical)
+                .spacing(1)
                 .constraints([
                     Constraint::Length(slots_h), // Scales dynamically with number of slots!
                     Constraint::Min(3),          // GPU Top table

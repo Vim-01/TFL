@@ -3,19 +3,29 @@ use ratatui::style::Color;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ThemeId {
     #[default]
-    BtopNeon,       // Transparent 1: Vivid Cyan & Violet
-    CyberMatrix,    // Transparent 2: Emerald Green & Laser Amber
-    Synthwave,      // Transparent 3: Hot Magenta & Electric Cyan
-    NordFrost,      // Transparent 4: Glacier Ice & Aurora Gold
-    SolarizedGlow,  // Transparent 5: Solarized Teal & Amber Gold
-    MidnightOled,   // Solid Fill 1: Deep Opaque Midnight Black
-    LightPaper,     // Solid Fill 2: Pure Opaque Light Paper
+    BtopNeon,        // Transparent 1: Vivid Cyan & Violet (Default)
+    CatppuccinMocha, // Transparent 2: Pastel Lavender, Mauve & Peach (Catppuccin)
+    TokyoNight,      // Transparent 3: Sleek Storm Navy, Cyan & Violet
+    Dracula,         // Transparent 4: Iconic Vampire Purple, Pink & Green
+    GruvboxDark,     // Transparent 5: Earthy Retro Warm Aqua & Gold
+    RosePine,        // Transparent 6: Aesthetic Muted Pine, Rose & Gold
+    CyberMatrix,     // Transparent 7: Emerald Green & Laser Amber
+    Synthwave,       // Transparent 8: Hot Magenta & Electric Cyan
+    NordFrost,       // Transparent 9: Glacier Ice & Aurora Gold
+    SolarizedGlow,   // Transparent 10: Solarized Teal & Amber Gold
+    MidnightOled,    // Solid Fill 1: Deep Opaque Midnight Black
+    LightPaper,      // Solid Fill 2: Pure Opaque Light Paper
 }
 
 impl ThemeId {
     pub fn all() -> &'static [ThemeId] {
         &[
             ThemeId::BtopNeon,
+            ThemeId::CatppuccinMocha,
+            ThemeId::TokyoNight,
+            ThemeId::Dracula,
+            ThemeId::GruvboxDark,
+            ThemeId::RosePine,
             ThemeId::CyberMatrix,
             ThemeId::Synthwave,
             ThemeId::NordFrost,
@@ -28,6 +38,11 @@ impl ThemeId {
     pub fn name(&self) -> &'static str {
         match self {
             Self::BtopNeon => "Btop Neon [Transparent]",
+            Self::CatppuccinMocha => "Catppuccin Mocha [Transparent]",
+            Self::TokyoNight => "Tokyo Night [Transparent]",
+            Self::Dracula => "Dracula [Transparent]",
+            Self::GruvboxDark => "Gruvbox Dark [Transparent]",
+            Self::RosePine => "Rosé Pine [Transparent]",
             Self::CyberMatrix => "Cyber Matrix [Transparent]",
             Self::Synthwave => "Synthwave 80s [Transparent]",
             Self::NordFrost => "Nord Frost [Transparent]",
@@ -43,7 +58,12 @@ impl ThemeId {
 
     pub fn next(&self) -> Self {
         match self {
-            Self::BtopNeon => Self::CyberMatrix,
+            Self::BtopNeon => Self::CatppuccinMocha,
+            Self::CatppuccinMocha => Self::TokyoNight,
+            Self::TokyoNight => Self::Dracula,
+            Self::Dracula => Self::GruvboxDark,
+            Self::GruvboxDark => Self::RosePine,
+            Self::RosePine => Self::CyberMatrix,
             Self::CyberMatrix => Self::Synthwave,
             Self::Synthwave => Self::NordFrost,
             Self::NordFrost => Self::SolarizedGlow,
@@ -56,7 +76,12 @@ impl ThemeId {
     pub fn prev(&self) -> Self {
         match self {
             Self::BtopNeon => Self::LightPaper,
-            Self::CyberMatrix => Self::BtopNeon,
+            Self::CatppuccinMocha => Self::BtopNeon,
+            Self::TokyoNight => Self::CatppuccinMocha,
+            Self::Dracula => Self::TokyoNight,
+            Self::GruvboxDark => Self::Dracula,
+            Self::RosePine => Self::GruvboxDark,
+            Self::CyberMatrix => Self::RosePine,
             Self::Synthwave => Self::CyberMatrix,
             Self::NordFrost => Self::Synthwave,
             Self::SolarizedGlow => Self::NordFrost,
@@ -128,7 +153,157 @@ impl Theme {
             },
 
             // ================================================================
-            // TRANSPARENT THEME 2: Cyber Matrix (Phosphor Green & Gold)
+            // TRANSPARENT THEME 2: Catppuccin Mocha (Pastel Lavender, Mauve & Peach)
+            // ================================================================
+            ThemeId::CatppuccinMocha => Self {
+                id,
+                name: id.name(),
+                bg: if force_solid_bg { Some(Color::Rgb(30, 30, 46)) } else { None },
+                fg: Color::Rgb(205, 214, 244),          // Text #cdd6f4
+                fg_dim: Color::Rgb(166, 173, 200),      // Subtext0 #a6adc8
+                fg_highlight: Color::Rgb(249, 226, 175),// Yellow #f9e2af
+                border_normal: Color::Rgb(88, 91, 112), // Surface2 #585b70
+                border_active: Color::Rgb(180, 190, 254),// Lavender #b4befe
+                box_cpu: Color::Rgb(203, 166, 247),    // Mauve #cba6f7
+                box_gpu: Color::Rgb(137, 180, 250),    // Blue #89b4fa
+                box_llm: Color::Rgb(148, 226, 213),    // Teal #94e2d5
+                box_queue: Color::Rgb(250, 179, 135),   // Peach #fab387
+                bar_track: Color::Rgb(49, 50, 68),      // Surface0 #313244
+                bar_fill: Color::Rgb(166, 227, 161),    // Green #a6e3a1
+                spark_tps: Color::Rgb(250, 179, 135),   // Peach
+                spark_compute: Color::Rgb(203, 166, 247), // Mauve
+                spark_mem: Color::Rgb(116, 199, 236),   // Sapphire #74c7ec
+                temp_cool: Color::Rgb(166, 227, 161),   // Green
+                temp_warm: Color::Rgb(249, 226, 175),   // Yellow
+                temp_hot: Color::Rgb(243, 139, 168),    // Red #f38ba8
+                status_online: Color::Rgb(166, 227, 161),
+                status_offline: Color::Rgb(243, 139, 168),
+                selected_bg: Color::Rgb(69, 71, 90),    // Surface1 #45475a
+                selected_fg: Color::Rgb(205, 214, 244),
+            },
+
+            // ================================================================
+            // TRANSPARENT THEME 3: Tokyo Night (Storm Navy, Cyan & Violet)
+            // ================================================================
+            ThemeId::TokyoNight => Self {
+                id,
+                name: id.name(),
+                bg: if force_solid_bg { Some(Color::Rgb(26, 27, 38)) } else { None },
+                fg: Color::Rgb(192, 202, 245),          // #c0caf5
+                fg_dim: Color::Rgb(140, 153, 200),
+                fg_highlight: Color::Rgb(224, 175, 104),// #e0af68
+                border_normal: Color::Rgb(65, 72, 104), // #414868
+                border_active: Color::Rgb(122, 162, 247),// #7aa2f7
+                box_cpu: Color::Rgb(187, 154, 247),    // #bb9af7
+                box_gpu: Color::Rgb(125, 207, 255),    // #7dcfff
+                box_llm: Color::Rgb(115, 218, 202),    // #73daca
+                box_queue: Color::Rgb(255, 158, 100),   // #ff9e64
+                bar_track: Color::Rgb(41, 46, 66),
+                bar_fill: Color::Rgb(115, 218, 202),
+                spark_tps: Color::Rgb(255, 158, 100),
+                spark_compute: Color::Rgb(187, 154, 247),
+                spark_mem: Color::Rgb(125, 207, 255),
+                temp_cool: Color::Rgb(115, 218, 202),
+                temp_warm: Color::Rgb(224, 175, 104),
+                temp_hot: Color::Rgb(247, 118, 142),    // #f7768e
+                status_online: Color::Rgb(115, 218, 202),
+                status_offline: Color::Rgb(247, 118, 142),
+                selected_bg: Color::Rgb(47, 53, 80),
+                selected_fg: Color::Rgb(192, 202, 245),
+            },
+
+            // ================================================================
+            // TRANSPARENT THEME 4: Dracula (Iconic Vampire Purple, Pink & Green)
+            // ================================================================
+            ThemeId::Dracula => Self {
+                id,
+                name: id.name(),
+                bg: if force_solid_bg { Some(Color::Rgb(40, 42, 54)) } else { None },
+                fg: Color::Rgb(248, 248, 242),          // #f8f8f2
+                fg_dim: Color::Rgb(189, 195, 210),
+                fg_highlight: Color::Rgb(241, 250, 140),// #f1fa8c
+                border_normal: Color::Rgb(98, 114, 164), // #6272a4
+                border_active: Color::Rgb(189, 147, 249),// #bd93f9
+                box_cpu: Color::Rgb(255, 121, 198),    // #ff79c6
+                box_gpu: Color::Rgb(189, 147, 249),    // #bd93f9
+                box_llm: Color::Rgb(139, 233, 253),    // #8be9fd
+                box_queue: Color::Rgb(255, 184, 108),   // #ffb86c
+                bar_track: Color::Rgb(68, 71, 90),      // #44475a
+                bar_fill: Color::Rgb(80, 250, 123),     // #50fa7b
+                spark_tps: Color::Rgb(255, 184, 108),
+                spark_compute: Color::Rgb(255, 121, 198),
+                spark_mem: Color::Rgb(139, 233, 253),
+                temp_cool: Color::Rgb(80, 250, 123),
+                temp_warm: Color::Rgb(241, 250, 140),
+                temp_hot: Color::Rgb(255, 85, 85),      // #ff5555
+                status_online: Color::Rgb(80, 250, 123),
+                status_offline: Color::Rgb(255, 85, 85),
+                selected_bg: Color::Rgb(68, 71, 90),
+                selected_fg: Color::Rgb(248, 248, 242),
+            },
+
+            // ================================================================
+            // TRANSPARENT THEME 5: Gruvbox Dark (Earthy Retro Warm Aqua & Gold)
+            // ================================================================
+            ThemeId::GruvboxDark => Self {
+                id,
+                name: id.name(),
+                bg: if force_solid_bg { Some(Color::Rgb(40, 40, 40)) } else { None },
+                fg: Color::Rgb(235, 219, 178),          // #ebdbb2
+                fg_dim: Color::Rgb(168, 153, 132),      // #a89984
+                fg_highlight: Color::Rgb(250, 189, 47), // #fabd2f
+                border_normal: Color::Rgb(102, 92, 84), // #665c54
+                border_active: Color::Rgb(254, 128, 25), // #fe8019
+                box_cpu: Color::Rgb(211, 134, 155),    // #d3869b
+                box_gpu: Color::Rgb(131, 165, 152),    // #83a598
+                box_llm: Color::Rgb(142, 192, 124),    // #8ec07c
+                box_queue: Color::Rgb(254, 128, 25),    // #fe8019
+                bar_track: Color::Rgb(60, 56, 54),      // #3c3836
+                bar_fill: Color::Rgb(184, 187, 38),     // #b8bb26
+                spark_tps: Color::Rgb(254, 128, 25),
+                spark_compute: Color::Rgb(211, 134, 155),
+                spark_mem: Color::Rgb(131, 165, 152),
+                temp_cool: Color::Rgb(184, 187, 38),
+                temp_warm: Color::Rgb(250, 189, 47),
+                temp_hot: Color::Rgb(251, 73, 52),      // #fb4934
+                status_online: Color::Rgb(184, 187, 38),
+                status_offline: Color::Rgb(251, 73, 52),
+                selected_bg: Color::Rgb(80, 73, 69),
+                selected_fg: Color::Rgb(235, 219, 178),
+            },
+
+            // ================================================================
+            // TRANSPARENT THEME 6: Rosé Pine (Aesthetic Muted Pine, Rose & Gold)
+            // ================================================================
+            ThemeId::RosePine => Self {
+                id,
+                name: id.name(),
+                bg: if force_solid_bg { Some(Color::Rgb(25, 23, 36)) } else { None },
+                fg: Color::Rgb(224, 222, 244),          // #e0def4
+                fg_dim: Color::Rgb(144, 140, 170),      // #908caa
+                fg_highlight: Color::Rgb(246, 193, 119),// #f6c177
+                border_normal: Color::Rgb(82, 79, 103), // #524f67
+                border_active: Color::Rgb(156, 207, 216),// #9ccfd8
+                box_cpu: Color::Rgb(196, 167, 231),    // #c4a7e7
+                box_gpu: Color::Rgb(49, 116, 143),     // #31748f
+                box_llm: Color::Rgb(156, 207, 216),    // #9ccfd8
+                box_queue: Color::Rgb(235, 188, 186),   // #ebbcba
+                bar_track: Color::Rgb(38, 35, 58),      // #26233a
+                bar_fill: Color::Rgb(156, 207, 216),    // #9ccfd8
+                spark_tps: Color::Rgb(246, 193, 119),
+                spark_compute: Color::Rgb(196, 167, 231),
+                spark_mem: Color::Rgb(156, 207, 216),
+                temp_cool: Color::Rgb(156, 207, 216),
+                temp_warm: Color::Rgb(246, 193, 119),
+                temp_hot: Color::Rgb(235, 111, 146),    // #eb6f92
+                status_online: Color::Rgb(156, 207, 216),
+                status_offline: Color::Rgb(235, 111, 146),
+                selected_bg: Color::Rgb(64, 61, 82),
+                selected_fg: Color::Rgb(224, 222, 244),
+            },
+
+            // ================================================================
+            // TRANSPARENT THEME 7: Cyber Matrix (Phosphor Green & Gold)
             // ================================================================
             ThemeId::CyberMatrix => Self {
                 id,

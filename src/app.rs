@@ -40,14 +40,19 @@ pub struct App {
     pub gpus: Vec<GpuMetrics>,
     pub llm: Option<LlmMetrics>,
 
-    // 120-step historical data ring buffers (fills wide terminals cleanly)
-    pub decode_tps_history: HistoryRingBuffer<f64, 120>,
-    pub prefill_tps_history: HistoryRingBuffer<f64, 120>,
-    pub gpu_compute_history: HistoryRingBuffer<f64, 120>,
-    pub gpu_mem_controller_history: HistoryRingBuffer<f64, 120>,
-    pub gpu_vram_history: HistoryRingBuffer<f64, 120>,
-    pub cpu_usage_history: HistoryRingBuffer<f64, 120>,
-    pub speculative_history: HistoryRingBuffer<f64, 120>,
+    // 512-step historical data ring buffers (fills ultra-wide 4K terminals cleanly without distortion)
+    pub decode_tps_history: HistoryRingBuffer<f64, 512>,
+    pub prefill_tps_history: HistoryRingBuffer<f64, 512>,
+    pub gpu_compute_history: HistoryRingBuffer<f64, 512>,
+    pub gpu_mem_controller_history: HistoryRingBuffer<f64, 512>,
+    pub gpu_vram_history: HistoryRingBuffer<f64, 512>,
+    pub cpu_usage_history: HistoryRingBuffer<f64, 512>,
+    pub speculative_history: HistoryRingBuffer<f64, 512>,
+
+    // Rolling CPU usage averages (1 min, 15 min, and all-time since start)
+    pub cpu_samples_15m: std::collections::VecDeque<(std::time::Instant, f64)>,
+    pub cpu_all_time_sum: f64,
+    pub cpu_all_time_count: u64,
 
     pub active_tab: ActiveTab,
     pub is_paused: bool,
@@ -89,6 +94,9 @@ impl App {
             gpu_vram_history: HistoryRingBuffer::with_initial(0.0),
             cpu_usage_history: HistoryRingBuffer::with_initial(0.0),
             speculative_history: HistoryRingBuffer::with_initial(0.0),
+            cpu_samples_15m: std::collections::VecDeque::new(),
+            cpu_all_time_sum: 0.0,
+            cpu_all_time_count: 0,
             active_tab: ActiveTab::Dashboard,
             is_paused: false,
             should_quit: false,
@@ -112,6 +120,41 @@ impl App {
         self.poll_interval.store(ms, Ordering::Relaxed);
     }
 
+    pub fn cpu_avg_1m(&self) -> f64 {
+        if self.cpu_samples_15m.is_empty() {
+            return self.cpu.as_ref().map(|c| c.global_usage_percent as f64).unwrap_or(0.0);
+        }
+        let now = std::time::Instant::now();
+        let cutoff_1m = now.checked_sub(std::time::Duration::from_secs(60)).unwrap_or(now);
+        let mut sum = 0.0;
+        let mut count = 0;
+        for (t, val) in self.cpu_samples_15m.iter().rev() {
+            if *t >= cutoff_1m {
+                sum += *val;
+                count += 1;
+            } else {
+                break;
+            }
+        }
+        if count > 0 { sum / count as f64 } else { 0.0 }
+    }
+
+    pub fn cpu_avg_15m(&self) -> f64 {
+        if self.cpu_samples_15m.is_empty() {
+            return self.cpu.as_ref().map(|c| c.global_usage_percent as f64).unwrap_or(0.0);
+        }
+        let sum: f64 = self.cpu_samples_15m.iter().map(|(_, v)| *v).sum();
+        sum / self.cpu_samples_15m.len() as f64
+    }
+
+    pub fn cpu_avg_all_time(&self) -> f64 {
+        if self.cpu_all_time_count > 0 {
+            self.cpu_all_time_sum / self.cpu_all_time_count as f64
+        } else {
+            self.cpu.as_ref().map(|c| c.global_usage_percent as f64).unwrap_or(0.0)
+        }
+    }
+
     pub fn handle_metric_update(&mut self, update: MetricUpdate) {
         if self.is_paused {
             return;
@@ -121,7 +164,21 @@ impl App {
             MetricUpdate::Cpu(cpu) => {
                 let usage = cpu.global_usage_percent as f64;
                 if usage.is_finite() {
+                    let now = std::time::Instant::now();
                     self.cpu_usage_history.push(usage);
+                    self.cpu_all_time_sum += usage;
+                    self.cpu_all_time_count += 1;
+                    self.cpu_samples_15m.push_back((now, usage));
+
+                    // Prune samples older than 15 minutes (900 seconds)
+                    let cutoff_15m = now.checked_sub(std::time::Duration::from_secs(900)).unwrap_or(now);
+                    while let Some((t, _)) = self.cpu_samples_15m.front() {
+                        if *t < cutoff_15m {
+                            self.cpu_samples_15m.pop_front();
+                        } else {
+                            break;
+                        }
+                    }
                 }
                 self.cpu = Some(cpu);
             }
