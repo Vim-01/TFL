@@ -132,24 +132,46 @@ impl<'a> DashboardView<'a> {
                 let sub_title = Line::from(vec![
                     Span::styled(format!("{cpu_brand} "), Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)),
                     Span::styled("Load: ", Style::default().fg(theme.fg_dim)),
-                    Span::styled(format!("{global_usage:>3.0}%  "), Style::default().fg(cores_load_color).add_modifier(Modifier::BOLD)),
-                    Span::styled(format!("[{avg_freq:.2} GHz]  "), Style::default().fg(theme.fg_dim)),
-                    Span::styled(format!("PWR: {cpu_pwr:.1}W"), Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("{global_usage:>3.0}%"), Style::default().fg(cores_load_color).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!(" ({} threads)", num_cores), Style::default().fg(theme.fg_dim)),
                 ]);
                 buf.set_line(sub_chunks[0].x, sub_chunks[0].y, &sub_title, sub_chunks[0].width);
 
-                // Full-width horizontal CPU temperature gauge (addressed user request #1)
+                // Horizontal CPU temperature gauge + Live Clock, Power & Uptime filling the space
                 let cpu_temp_color = thermal_color(cpu_temp);
-                let cpu_bar_width = (sub_chunks[1].width.saturating_sub(18)) as usize;
-                let cpu_bar_len = cpu_bar_width.clamp(6, 45);
+                let w = sub_chunks[1].width;
+                let cpu_bar_len = if w >= 70 { 12 } else if w >= 55 { 8 } else { 6 };
                 let (cpu_bar, cpu_empty) = rectangular_bar(cpu_temp, 100.0, cpu_bar_len);
 
-                let temp_line = Line::from(vec![
+                let mut temp_spans = vec![
                     Span::styled("CPU Temp: ", Style::default().fg(theme.fg_dim)),
                     Span::styled(cpu_bar, Style::default().fg(cpu_temp_color)),
                     Span::styled(cpu_empty, Style::default().fg(theme.bar_track)),
                     Span::styled(format!(" {cpu_temp:.0}°C"), Style::default().fg(cpu_temp_color).add_modifier(Modifier::BOLD)),
-                ]);
+                ];
+
+                if w >= 70 {
+                    temp_spans.push(Span::styled("  |  Clock: ", Style::default().fg(theme.fg_dim)));
+                    temp_spans.push(Span::styled(format!("{avg_freq:.2} GHz"), Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)));
+                    temp_spans.push(Span::styled("  |  PWR: ", Style::default().fg(theme.fg_dim)));
+                    temp_spans.push(Span::styled(format!("{cpu_pwr:.1}W"), Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)));
+                    temp_spans.push(Span::styled("  |  Up: ", Style::default().fg(theme.fg_dim)));
+                    temp_spans.push(Span::styled(format_uptime(cpu.uptime_seconds), Style::default().fg(theme.fg)));
+                } else if w >= 54 {
+                    temp_spans.push(Span::styled(" | ", Style::default().fg(theme.fg_dim)));
+                    temp_spans.push(Span::styled(format!("{avg_freq:.2}GHz"), Style::default().fg(theme.fg)));
+                    temp_spans.push(Span::styled(" | ", Style::default().fg(theme.fg_dim)));
+                    temp_spans.push(Span::styled(format!("{cpu_pwr:.0}W"), Style::default().fg(theme.fg_highlight)));
+                    temp_spans.push(Span::styled(" | Up: ", Style::default().fg(theme.fg_dim)));
+                    temp_spans.push(Span::styled(format_uptime(cpu.uptime_seconds), Style::default().fg(theme.fg)));
+                } else if w >= 40 {
+                    temp_spans.push(Span::styled(" | ", Style::default().fg(theme.fg_dim)));
+                    temp_spans.push(Span::styled(format!("{avg_freq:.2}GHz"), Style::default().fg(theme.fg)));
+                    temp_spans.push(Span::styled(" ", Style::default().fg(theme.fg_dim)));
+                    temp_spans.push(Span::styled(format!("{cpu_pwr:.0}W"), Style::default().fg(theme.fg_highlight)));
+                }
+
+                let temp_line = Line::from(temp_spans);
                 buf.set_line(sub_chunks[1].x, sub_chunks[1].y, &temp_line, sub_chunks[1].width);
 
                 // Multi-column Core Grid with smooth rectangular solid bar filling matching cpu temp
@@ -193,13 +215,18 @@ impl<'a> DashboardView<'a> {
                     }
                 }
 
-                // Bottom Line (RAM, Load avg, Uptime)
+                // Bottom Line (RAM with bar, Load avg, Uptime)
+                let ram_bar_len = ((sub_chunks[3].width as usize).saturating_sub(44)).clamp(4, 16);
+                let (ram_bar, ram_empty) = rectangular_bar(ram_pct as f32, 100.0, ram_bar_len);
+
                 let bot_line = Line::from(vec![
                     Span::styled("RAM: ", Style::default().fg(theme.fg_dim)),
-                    Span::styled(format!("{ram_used:.1}/{ram_total:.1}G ({ram_pct}%)  "), Style::default().fg(theme.border_active)),
-                    Span::styled("Load: ", Style::default().fg(theme.fg_dim)),
+                    Span::styled(ram_bar, Style::default().fg(theme.border_active)),
+                    Span::styled(ram_empty, Style::default().fg(theme.bar_track)),
+                    Span::styled(format!(" {ram_used:.1}/{ram_total:.1}G ({ram_pct}%)  "), Style::default().fg(theme.border_active)),
+                    Span::styled("|  Load: ", Style::default().fg(theme.fg_dim)),
                     Span::styled(format!("{:.2} {:.2} {:.2}  ", load_avg[0], load_avg[1], load_avg[2]), Style::default().fg(theme.fg)),
-                    Span::styled("Up: ", Style::default().fg(theme.fg_dim)),
+                    Span::styled("|  Up: ", Style::default().fg(theme.fg_dim)),
                     Span::styled(format_uptime(cpu.uptime_seconds), Style::default().fg(theme.fg)),
                 ]);
                 buf.set_line(sub_chunks[3].x, sub_chunks[3].y, &bot_line, sub_chunks[3].width);
@@ -771,10 +798,10 @@ impl<'a> DashboardView<'a> {
                         lines.push(Line::from(vec![
                             Span::styled("Decode:  ", Style::default().fg(theme.spark_tps).add_modifier(Modifier::BOLD)),
                             Span::styled(format!("{dec_cur:>5.1} "), Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
-                            Span::styled("t/s ", Style::default().fg(theme.fg_dim)),
-                            Span::styled("(Pk: ", Style::default().fg(theme.fg_dim)),
+                            Span::styled("t/s  ", Style::default().fg(theme.fg_dim)),
+                            Span::styled("[Peak: ", Style::default().fg(theme.fg_dim)),
                             Span::styled(format!("{dec_pk:>4.1}"), Style::default().fg(theme.temp_warm).add_modifier(Modifier::BOLD)),
-                            Span::styled(")", Style::default().fg(theme.fg_dim)),
+                            Span::styled("]", Style::default().fg(theme.fg_dim)),
                         ]));
                         lines.push(Line::from(vec![
                             Span::styled("  Avg 1m: ", Style::default().fg(theme.fg_dim)),
@@ -791,7 +818,7 @@ impl<'a> DashboardView<'a> {
                         lines.push(Line::from(vec![
                             Span::styled("Dec: ", Style::default().fg(theme.spark_tps).add_modifier(Modifier::BOLD)),
                             Span::styled(format!("{dec_cur:.1} "), Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
-                            Span::styled("Pk:", Style::default().fg(theme.fg_dim)),
+                            Span::styled("Peak: ", Style::default().fg(theme.fg_dim)),
                             Span::styled(format!("{dec_pk:.1}"), Style::default().fg(theme.temp_warm)),
                         ]));
                         lines.push(Line::from(vec![
@@ -815,10 +842,10 @@ impl<'a> DashboardView<'a> {
                         lines.push(Line::from(vec![
                             Span::styled("Prefill: ", Style::default().fg(theme.temp_cool).add_modifier(Modifier::BOLD)),
                             Span::styled(format!("{prf_cur_str:>5} "), Style::default().fg(theme.temp_cool).add_modifier(Modifier::BOLD)),
-                            Span::styled("t/s ", Style::default().fg(theme.fg_dim)),
-                            Span::styled("(Pk: ", Style::default().fg(theme.fg_dim)),
+                            Span::styled("t/s  ", Style::default().fg(theme.fg_dim)),
+                            Span::styled("[Peak: ", Style::default().fg(theme.fg_dim)),
                             Span::styled(format!("{prf_pk_str:>4}"), Style::default().fg(theme.temp_warm).add_modifier(Modifier::BOLD)),
-                            Span::styled(")", Style::default().fg(theme.fg_dim)),
+                            Span::styled("]", Style::default().fg(theme.fg_dim)),
                         ]));
                         lines.push(Line::from(vec![
                             Span::styled("  Avg 1m: ", Style::default().fg(theme.fg_dim)),
@@ -835,7 +862,7 @@ impl<'a> DashboardView<'a> {
                         lines.push(Line::from(vec![
                             Span::styled("Prf: ", Style::default().fg(theme.temp_cool).add_modifier(Modifier::BOLD)),
                             Span::styled(format!("{prf_cur_str} "), Style::default().fg(theme.temp_cool).add_modifier(Modifier::BOLD)),
-                            Span::styled("Pk:", Style::default().fg(theme.fg_dim)),
+                            Span::styled("Peak: ", Style::default().fg(theme.fg_dim)),
                             Span::styled(prf_pk_str.clone(), Style::default().fg(theme.temp_warm)),
                         ]));
                         lines.push(Line::from(vec![
@@ -859,9 +886,9 @@ impl<'a> DashboardView<'a> {
                         lines.push(Line::from(vec![
                             Span::styled("MTP Acc: ", Style::default().fg(theme.border_active).add_modifier(Modifier::BOLD)),
                             Span::styled(format!("{mtp_cur_str:>6} "), Style::default().fg(mtp_color).add_modifier(Modifier::BOLD)),
-                            Span::styled("(Pk: ", Style::default().fg(theme.fg_dim)),
+                            Span::styled(" [Peak: ", Style::default().fg(theme.fg_dim)),
                             Span::styled(format!("{mtp_pk_str:>5}"), Style::default().fg(theme.temp_warm).add_modifier(Modifier::BOLD)),
-                            Span::styled(")", Style::default().fg(theme.fg_dim)),
+                            Span::styled("]", Style::default().fg(theme.fg_dim)),
                         ]));
                         lines.push(Line::from(vec![
                             Span::styled("  Avg 1m: ", Style::default().fg(theme.fg_dim)),
@@ -877,7 +904,7 @@ impl<'a> DashboardView<'a> {
                         lines.push(Line::from(vec![
                             Span::styled("MTP: ", Style::default().fg(theme.border_active).add_modifier(Modifier::BOLD)),
                             Span::styled(format!("{mtp_cur_str} "), Style::default().fg(mtp_color).add_modifier(Modifier::BOLD)),
-                            Span::styled("Pk:", Style::default().fg(theme.fg_dim)),
+                            Span::styled("Peak: ", Style::default().fg(theme.fg_dim)),
                             Span::styled(mtp_pk_str.clone(), Style::default().fg(theme.temp_warm)),
                         ]));
                         lines.push(Line::from(vec![
@@ -897,7 +924,7 @@ impl<'a> DashboardView<'a> {
                         Span::styled("Decode:  ", Style::default().fg(theme.spark_tps).add_modifier(Modifier::BOLD)),
                         Span::styled(format!("{dec_cur:>4.1} "), Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
                         Span::styled("t/s ", Style::default().fg(theme.fg_dim)),
-                        Span::styled(format!("[Pk: {dec_pk:.1}]"), Style::default().fg(theme.temp_warm)),
+                        Span::styled(format!("[Peak: {dec_pk:.1}]"), Style::default().fg(theme.temp_warm)),
                     ]));
                     lines.push(Line::from(vec![
                         Span::styled(" 1m:", Style::default().fg(theme.fg_dim)),
@@ -912,7 +939,7 @@ impl<'a> DashboardView<'a> {
                         Span::styled("Prefill: ", Style::default().fg(theme.temp_cool).add_modifier(Modifier::BOLD)),
                         Span::styled(format!("{prf_cur_str:>4} "), Style::default().fg(theme.temp_cool).add_modifier(Modifier::BOLD)),
                         Span::styled("t/s ", Style::default().fg(theme.fg_dim)),
-                        Span::styled(format!("[Pk: {prf_pk_str}]"), Style::default().fg(theme.temp_warm)),
+                        Span::styled(format!("[Peak: {prf_pk_str}]"), Style::default().fg(theme.temp_warm)),
                     ]));
                     lines.push(Line::from(vec![
                         Span::styled(" 1m:", Style::default().fg(theme.fg_dim)),
@@ -926,7 +953,7 @@ impl<'a> DashboardView<'a> {
                     lines.push(Line::from(vec![
                         Span::styled("MTP Acc: ", Style::default().fg(theme.border_active).add_modifier(Modifier::BOLD)),
                         Span::styled(format!("{mtp_cur_str} "), Style::default().fg(mtp_color).add_modifier(Modifier::BOLD)),
-                        Span::styled(format!("[Pk: {mtp_pk_str}]"), Style::default().fg(theme.temp_warm)),
+                        Span::styled(format!("[Peak: {mtp_pk_str}]"), Style::default().fg(theme.temp_warm)),
                     ]));
                     lines.push(Line::from(vec![
                         Span::styled(" 1m:", Style::default().fg(theme.fg_dim)),

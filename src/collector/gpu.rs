@@ -31,7 +31,9 @@ struct AmdCardPaths {
     mem_busy_file: Option<PathBuf>,
     mem_vendor_file: Option<PathBuf>,
     sclk_file: Option<PathBuf>,
+    sclk_hwmon_file: Option<PathBuf>,
     mclk_file: Option<PathBuf>,
+    mclk_hwmon_file: Option<PathBuf>,
     fan_rpm_file: Option<PathBuf>,
     voltage_file: Option<PathBuf>,
     pcie_speed_file: Option<PathBuf>,
@@ -94,8 +96,30 @@ impl AmdSysfsBackend {
             let mut fan_pwm_file = None;
             let mut fan_rpm_file = None;
             let mut voltage_file = None;
+            let mut sclk_hwmon_file = None;
+            let mut mclk_hwmon_file = None;
 
             if let Some(ref hw_dir) = hwmon_dir {
+                // Discover frequency files (sclk, mclk)
+                for i in 1..=3 {
+                    let label_file = hw_dir.join(format!("freq{i}_label"));
+                    let input_file = hw_dir.join(format!("freq{i}_input"));
+                    if input_file.exists() {
+                        if let Ok(label) = fs::read_to_string(&label_file) {
+                            let label_clean = label.trim().to_lowercase();
+                            if label_clean.contains("sclk") || label_clean.contains("gfx") {
+                                sclk_hwmon_file = Some(input_file);
+                            } else if label_clean.contains("mclk") || label_clean.contains("mem") {
+                                mclk_hwmon_file = Some(input_file);
+                            }
+                        } else if i == 1 && sclk_hwmon_file.is_none() {
+                            sclk_hwmon_file = Some(input_file);
+                        } else if i == 2 && mclk_hwmon_file.is_none() {
+                            mclk_hwmon_file = Some(input_file);
+                        }
+                    }
+                }
+
                 // Discover temperature files
                 for i in 1..=5 {
                     let label_file = hw_dir.join(format!("temp{i}_label"));
@@ -172,8 +196,13 @@ impl AmdSysfsBackend {
                 if p.exists() { Some(p) } else { None }
             };
             let sclk_file = {
-                let p = device_dir.join("current_gfxclk");
-                if p.exists() { Some(p) } else { None }
+                let p = device_dir.join("pp_dpm_sclk");
+                if p.exists() {
+                    Some(p)
+                } else {
+                    let p2 = device_dir.join("current_gfxclk");
+                    if p2.exists() { Some(p2) } else { None }
+                }
             };
             let mclk_file = {
                 let p = device_dir.join("pp_dpm_mclk");
@@ -206,7 +235,9 @@ impl AmdSysfsBackend {
                 mem_busy_file,
                 mem_vendor_file,
                 sclk_file,
+                sclk_hwmon_file,
                 mclk_file,
+                mclk_hwmon_file,
                 fan_rpm_file,
                 voltage_file,
                 pcie_speed_file,
@@ -295,15 +326,8 @@ impl GpuBackend for AmdSysfsBackend {
                 .and_then(|p| fs::read_to_string(p).ok())
                 .map(|s| s.trim().to_string());
 
-            let sclk_mhz = card
-                .sclk_file
-                .as_ref()
-                .and_then(|p| read_u32_from_file(p));
-
-            let mclk_mhz = card
-                .mclk_file
-                .as_ref()
-                .and_then(|p| parse_amd_dpm_mclk(p));
+            let sclk_mhz = read_amd_sclk(card.sclk_file.as_deref(), card.sclk_hwmon_file.as_deref());
+            let mclk_mhz = read_amd_mclk(card.mclk_file.as_deref(), card.mclk_hwmon_file.as_deref());
 
             let fan_rpm = card
                 .fan_rpm_file
@@ -540,15 +564,66 @@ fn read_u64_from_file(path: &Path) -> Option<u64> {
     content.trim().parse::<u64>().ok()
 }
 
-fn parse_amd_dpm_mclk(path: &Path) -> Option<u32> {
+fn parse_amd_dpm_clk(path: &Path) -> Option<u32> {
     let content = fs::read_to_string(path).ok()?;
     for line in content.lines() {
         if line.contains('*') {
-            if let Some(mhz_part) = line.split_whitespace().find(|p| p.ends_with("Mhz") || p.ends_with("MHz")) {
-                let num_str = mhz_part.trim_end_matches("Mhz").trim_end_matches("MHz");
+            if let Some(mhz_part) = line.split_whitespace().find(|p| p.to_lowercase().ends_with("mhz")) {
+                let num_str = mhz_part
+                    .trim_end_matches("Mhz")
+                    .trim_end_matches("MHz")
+                    .trim_end_matches("mhz");
                 if let Ok(mhz) = num_str.parse::<u32>() {
                     return Some(mhz);
                 }
+            }
+        }
+    }
+    None
+}
+
+fn read_amd_sclk(dpm_file: Option<&Path>, hwmon_file: Option<&Path>) -> Option<u32> {
+    // 1. Try hwmon frequency input (instantaneous clock in Hz)
+    if let Some(p) = hwmon_file {
+        if let Some(hz) = read_u64_from_file(p) {
+            let mhz = (hz / 1_000_000) as u32;
+            if mhz > 0 {
+                return Some(mhz);
+            }
+        }
+    }
+    // 2. Try pp_dpm_sclk (active DPM state with '*')
+    if let Some(p) = dpm_file {
+        if let Some(mhz) = parse_amd_dpm_clk(p) {
+            if mhz > 0 {
+                return Some(mhz);
+            }
+        }
+        // 3. Try direct MHz integer (e.g. current_gfxclk)
+        if let Some(mhz) = read_u32_from_file(p) {
+            if mhz > 0 {
+                return Some(mhz);
+            }
+        }
+    }
+    None
+}
+
+fn read_amd_mclk(dpm_file: Option<&Path>, hwmon_file: Option<&Path>) -> Option<u32> {
+    // 1. Try pp_dpm_mclk
+    if let Some(p) = dpm_file {
+        if let Some(mhz) = parse_amd_dpm_clk(p) {
+            if mhz > 0 {
+                return Some(mhz);
+            }
+        }
+    }
+    // 2. Try hwmon frequency input (Hz)
+    if let Some(p) = hwmon_file {
+        if let Some(hz) = read_u64_from_file(p) {
+            let mhz = (hz / 1_000_000) as u32;
+            if mhz > 0 {
+                return Some(mhz);
             }
         }
     }

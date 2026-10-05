@@ -45,6 +45,9 @@ async fn test_live_gpu_collector() {
         if let Some(mv) = g.voltage_mv {
             println!("Voltage: {} mV", mv);
         }
+        println!("SCLK: {:?} MHz, MCLK: {:?} MHz", g.sclk_mhz, g.mclk_mhz);
+        assert!(g.sclk_mhz.is_some() && g.sclk_mhz.unwrap() > 0, "SCLK must be detected and non-zero on active GPU");
+        assert!(g.mclk_mhz.is_some() && g.mclk_mhz.unwrap() > 0, "MCLK must be detected and non-zero on active GPU");
         if let Some(ref pcie) = g.pcie_link {
             println!("PCIe Link: {}", pcie);
         }
