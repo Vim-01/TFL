@@ -249,3 +249,73 @@ async fn test_dynamic_slots_scaling() {
     assert!(found_slot_3, "Slot #3 must be visible when scaled");
     println!("Dynamic slots scaling verified: all 4 slots rendered successfully!");
 }
+
+#[test]
+fn test_llm_telemetry_averages_and_peak() {
+    use tfl::app::App;
+    use tfl::model::{LlmMetrics, MetricUpdate};
+
+    let mut app = App::new();
+
+    // 1. Initial state check
+    assert_eq!(app.llm_decode_avg_1m(), 0.0);
+    assert_eq!(app.llm_decode_peak(), 0.0);
+    assert_eq!(app.llm_prefill_avg_1m(), 0.0);
+    assert_eq!(app.llm_prefill_peak(), 0.0);
+    assert_eq!(app.llm_mtp_avg_1m(), 0.0);
+    assert_eq!(app.llm_mtp_peak(), 0.0);
+
+    // 2. Feed an LLM metric update with active decode, prefill, and speculative MTP
+    let update1 = LlmMetrics {
+        is_connected: true,
+        active_slots: 1,
+        instant_decode_tps: 50.0,
+        current_decode_tps: 50.0,
+        current_prefill_tps: 1200.0,
+        peak_decode_tps: 60.0,
+        speculative_acceptance_rate: Some(65.0),
+        mtp_draft_generated: 100,
+        mtp_draft_accepted: 65,
+        ..Default::default()
+    };
+
+    app.handle_metric_update(MetricUpdate::Llm(Box::new(update1)));
+
+    assert!((app.llm_decode_avg_1m() - 50.0).abs() < 1e-4);
+    assert!((app.llm_decode_peak() - 60.0).abs() < 1e-4);
+    assert!((app.llm_prefill_avg_1m() - 1200.0).abs() < 1e-4);
+    assert!((app.llm_prefill_peak() - 1200.0).abs() < 1e-4);
+    assert!((app.llm_mtp_avg_1m() - 65.0).abs() < 1e-4);
+    assert!((app.llm_mtp_peak() - 65.0).abs() < 1e-4);
+
+    // 3. Feed a second update with higher values
+    let update2 = LlmMetrics {
+        is_connected: true,
+        active_slots: 1,
+        instant_decode_tps: 70.0,
+        current_decode_tps: 70.0,
+        current_prefill_tps: 1600.0,
+        peak_decode_tps: 70.0,
+        speculative_acceptance_rate: Some(75.0),
+        mtp_draft_generated: 200,
+        mtp_draft_accepted: 150,
+        ..Default::default()
+    };
+
+    app.handle_metric_update(MetricUpdate::Llm(Box::new(update2)));
+
+    // Decode: (50 + 70)/2 = 60.0, Peak = 70.0
+    assert!((app.llm_decode_avg_1m() - 60.0).abs() < 1e-4);
+    assert!((app.llm_decode_avg_15m() - 60.0).abs() < 1e-4);
+    assert!((app.llm_decode_avg_all() - 60.0).abs() < 1e-4);
+    assert!((app.llm_decode_peak() - 70.0).abs() < 1e-4);
+
+    // Prefill: (1200 + 1600)/2 = 1400.0, Peak = 1600.0
+    assert!((app.llm_prefill_avg_1m() - 1400.0).abs() < 1e-4);
+    assert!((app.llm_prefill_peak() - 1600.0).abs() < 1e-4);
+
+    // MTP: (65 + 75)/2 = 70.0, Peak = 75.0
+    assert!((app.llm_mtp_avg_1m() - 70.0).abs() < 1e-4);
+    assert!((app.llm_mtp_peak() - 75.0).abs() < 1e-4);
+}
+

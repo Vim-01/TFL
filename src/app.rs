@@ -54,10 +54,23 @@ pub struct App {
     pub cpu_all_time_sum: f64,
     pub cpu_all_time_count: u64,
 
-    // Rolling LLM decode TPS averages (1 min, 15 min, and all-time since start)
-    pub llm_tps_samples_15m: std::collections::VecDeque<(std::time::Instant, f64)>,
-    pub llm_tps_all_time_sum: f64,
-    pub llm_tps_all_time_count: u64,
+    // Rolling LLM Decode TPS averages & peak
+    pub llm_decode_samples_15m: std::collections::VecDeque<(std::time::Instant, f64)>,
+    pub llm_decode_all_time_sum: f64,
+    pub llm_decode_all_time_count: u64,
+    pub llm_decode_peak: f64,
+
+    // Rolling LLM Prefill TPS averages & peak
+    pub llm_prefill_samples_15m: std::collections::VecDeque<(std::time::Instant, f64)>,
+    pub llm_prefill_all_time_sum: f64,
+    pub llm_prefill_all_time_count: u64,
+    pub llm_prefill_peak: f64,
+
+    // Rolling LLM MTP Acceptance Rate averages & peak
+    pub llm_mtp_samples_15m: std::collections::VecDeque<(std::time::Instant, f64)>,
+    pub llm_mtp_all_time_sum: f64,
+    pub llm_mtp_all_time_count: u64,
+    pub llm_mtp_peak: f64,
 
     pub active_tab: ActiveTab,
     pub is_paused: bool,
@@ -102,9 +115,18 @@ impl App {
             cpu_samples_15m: std::collections::VecDeque::new(),
             cpu_all_time_sum: 0.0,
             cpu_all_time_count: 0,
-            llm_tps_samples_15m: std::collections::VecDeque::new(),
-            llm_tps_all_time_sum: 0.0,
-            llm_tps_all_time_count: 0,
+            llm_decode_samples_15m: std::collections::VecDeque::new(),
+            llm_decode_all_time_sum: 0.0,
+            llm_decode_all_time_count: 0,
+            llm_decode_peak: 0.0,
+            llm_prefill_samples_15m: std::collections::VecDeque::new(),
+            llm_prefill_all_time_sum: 0.0,
+            llm_prefill_all_time_count: 0,
+            llm_prefill_peak: 0.0,
+            llm_mtp_samples_15m: std::collections::VecDeque::new(),
+            llm_mtp_all_time_sum: 0.0,
+            llm_mtp_all_time_count: 0,
+            llm_mtp_peak: 0.0,
             active_tab: ActiveTab::Dashboard,
             is_paused: false,
             should_quit: false,
@@ -163,12 +185,13 @@ impl App {
         }
     }
 
-    pub fn llm_tps_avg_1m(&self) -> f64 {
+    // --- Decode TPS Statistics ---
+    pub fn llm_decode_avg_1m(&self) -> f64 {
         let now = std::time::Instant::now();
         let cutoff_1m = now.checked_sub(std::time::Duration::from_secs(60)).unwrap_or(now);
         let mut sum = 0.0;
         let mut count = 0;
-        for (t, val) in self.llm_tps_samples_15m.iter().rev() {
+        for (t, val) in self.llm_decode_samples_15m.iter().rev() {
             if *t >= cutoff_1m {
                 sum += *val;
                 count += 1;
@@ -183,20 +206,120 @@ impl App {
         }
     }
 
-    pub fn llm_tps_avg_15m(&self) -> f64 {
-        if self.llm_tps_samples_15m.is_empty() {
+    pub fn llm_decode_avg_15m(&self) -> f64 {
+        if self.llm_decode_samples_15m.is_empty() {
             return self.llm.as_ref().map(|l| l.current_decode_tps as f64).unwrap_or(0.0);
         }
-        let sum: f64 = self.llm_tps_samples_15m.iter().map(|(_, v)| *v).sum();
-        sum / self.llm_tps_samples_15m.len() as f64
+        let sum: f64 = self.llm_decode_samples_15m.iter().map(|(_, v)| *v).sum();
+        sum / self.llm_decode_samples_15m.len() as f64
     }
 
-    pub fn llm_tps_avg_all_time(&self) -> f64 {
-        if self.llm_tps_all_time_count > 0 {
-            self.llm_tps_all_time_sum / self.llm_tps_all_time_count as f64
+    pub fn llm_decode_avg_all(&self) -> f64 {
+        if self.llm_decode_all_time_count > 0 {
+            self.llm_decode_all_time_sum / self.llm_decode_all_time_count as f64
         } else {
             self.llm.as_ref().map(|l| l.current_decode_tps as f64).unwrap_or(0.0)
         }
+    }
+
+    pub fn llm_decode_peak(&self) -> f64 {
+        let col_peak = self.llm.as_ref().map(|l| l.peak_decode_tps as f64).unwrap_or(0.0);
+        self.llm_decode_peak.max(col_peak).max(self.decode_tps_history.max())
+    }
+
+    // --- Prefill TPS Statistics ---
+    pub fn llm_prefill_avg_1m(&self) -> f64 {
+        let now = std::time::Instant::now();
+        let cutoff_1m = now.checked_sub(std::time::Duration::from_secs(60)).unwrap_or(now);
+        let mut sum = 0.0;
+        let mut count = 0;
+        for (t, val) in self.llm_prefill_samples_15m.iter().rev() {
+            if *t >= cutoff_1m {
+                sum += *val;
+                count += 1;
+            } else {
+                break;
+            }
+        }
+        if count > 0 {
+            sum / count as f64
+        } else {
+            self.llm.as_ref().map(|l| l.current_prefill_tps as f64).unwrap_or(0.0)
+        }
+    }
+
+    pub fn llm_prefill_avg_15m(&self) -> f64 {
+        if self.llm_prefill_samples_15m.is_empty() {
+            return self.llm.as_ref().map(|l| l.current_prefill_tps as f64).unwrap_or(0.0);
+        }
+        let sum: f64 = self.llm_prefill_samples_15m.iter().map(|(_, v)| *v).sum();
+        sum / self.llm_prefill_samples_15m.len() as f64
+    }
+
+    pub fn llm_prefill_avg_all(&self) -> f64 {
+        if self.llm_prefill_all_time_count > 0 {
+            self.llm_prefill_all_time_sum / self.llm_prefill_all_time_count as f64
+        } else {
+            self.llm.as_ref().map(|l| l.current_prefill_tps as f64).unwrap_or(0.0)
+        }
+    }
+
+    pub fn llm_prefill_peak(&self) -> f64 {
+        self.llm_prefill_peak.max(self.prefill_tps_history.max())
+    }
+
+    // --- MTP Acceptance Rate Statistics (%) ---
+    pub fn llm_mtp_avg_1m(&self) -> f64 {
+        let now = std::time::Instant::now();
+        let cutoff_1m = now.checked_sub(std::time::Duration::from_secs(60)).unwrap_or(now);
+        let mut sum = 0.0;
+        let mut count = 0;
+        for (t, val) in self.llm_mtp_samples_15m.iter().rev() {
+            if *t >= cutoff_1m {
+                sum += *val;
+                count += 1;
+            } else {
+                break;
+            }
+        }
+        if count > 0 {
+            sum / count as f64
+        } else {
+            self.llm.as_ref().and_then(|l| l.speculative_acceptance_rate).map(|r| r as f64).unwrap_or(0.0)
+        }
+    }
+
+    pub fn llm_mtp_avg_15m(&self) -> f64 {
+        if self.llm_mtp_samples_15m.is_empty() {
+            return self.llm.as_ref().and_then(|l| l.speculative_acceptance_rate).map(|r| r as f64).unwrap_or(0.0);
+        }
+        let sum: f64 = self.llm_mtp_samples_15m.iter().map(|(_, v)| *v).sum();
+        sum / self.llm_mtp_samples_15m.len() as f64
+    }
+
+    pub fn llm_mtp_avg_all(&self) -> f64 {
+        if self.llm_mtp_all_time_count > 0 {
+            self.llm_mtp_all_time_sum / self.llm_mtp_all_time_count as f64
+        } else {
+            self.llm.as_ref().and_then(|l| l.speculative_acceptance_rate).map(|r| r as f64).unwrap_or(0.0)
+        }
+    }
+
+    pub fn llm_mtp_peak(&self) -> f64 {
+        self.llm_mtp_peak.max(self.speculative_history.max())
+    }
+
+    // Backward compatibility aliases
+    pub fn llm_tps_avg_1m(&self) -> f64 {
+        self.llm_decode_avg_1m()
+    }
+
+    pub fn llm_tps_avg_15m(&self) -> f64 {
+        self.llm_decode_avg_15m()
+    }
+
+    pub fn llm_tps_avg_all_time(&self) -> f64 {
+        self.llm_decode_avg_all()
     }
 
     pub fn handle_metric_update(&mut self, update: MetricUpdate) {
@@ -254,6 +377,7 @@ impl App {
                 self.gpus = gpus;
             }
             MetricUpdate::Llm(llm) => {
+                let now = std::time::Instant::now();
                 let dec_tps = llm.instant_decode_tps as f64;
                 let prf_tps = llm.current_prefill_tps as f64;
                 if dec_tps.is_finite() {
@@ -263,8 +387,8 @@ impl App {
                     self.prefill_tps_history.push(prf_tps);
                 }
 
-                // Sample active token generation rate for 1m / 15m / all-time averages
-                let active_tps = if llm.active_slots > 0 && dec_tps > 0.0 {
+                // 1. Decode TPS Sampling & Peak Tracking
+                let active_dec_tps = if llm.active_slots > 0 && dec_tps > 0.0 {
                     dec_tps
                 } else if llm.active_slots > 0 && llm.current_decode_tps > 0.0 {
                     llm.current_decode_tps as f64
@@ -272,26 +396,62 @@ impl App {
                     0.0
                 };
 
-                if active_tps > 0.0 {
-                    let now = std::time::Instant::now();
-                    self.llm_tps_samples_15m.push_back((now, active_tps));
-                    self.llm_tps_all_time_sum += active_tps;
-                    self.llm_tps_all_time_count += 1;
+                if active_dec_tps > 0.0 {
+                    self.llm_decode_peak = self.llm_decode_peak.max(active_dec_tps);
+                    self.llm_decode_samples_15m.push_back((now, active_dec_tps));
+                    self.llm_decode_all_time_sum += active_dec_tps;
+                    self.llm_decode_all_time_count += 1;
 
                     let cutoff_15m = now.checked_sub(std::time::Duration::from_secs(900)).unwrap_or(now);
-                    while let Some((t, _)) = self.llm_tps_samples_15m.front() {
+                    while let Some((t, _)) = self.llm_decode_samples_15m.front() {
                         if *t < cutoff_15m {
-                            self.llm_tps_samples_15m.pop_front();
+                            self.llm_decode_samples_15m.pop_front();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                if llm.peak_decode_tps > 0.0 {
+                    self.llm_decode_peak = self.llm_decode_peak.max(llm.peak_decode_tps as f64);
+                }
+
+                // 2. Prefill TPS Sampling & Peak Tracking
+                if prf_tps > 0.0 {
+                    self.llm_prefill_peak = self.llm_prefill_peak.max(prf_tps);
+                    self.llm_prefill_samples_15m.push_back((now, prf_tps));
+                    self.llm_prefill_all_time_sum += prf_tps;
+                    self.llm_prefill_all_time_count += 1;
+
+                    let cutoff_15m = now.checked_sub(std::time::Duration::from_secs(900)).unwrap_or(now);
+                    while let Some((t, _)) = self.llm_prefill_samples_15m.front() {
+                        if *t < cutoff_15m {
+                            self.llm_prefill_samples_15m.pop_front();
                         } else {
                             break;
                         }
                     }
                 }
 
+                // 3. MTP Acceptance Rate Sampling & Peak Tracking
                 if let Some(rate) = llm.speculative_acceptance_rate {
                     let r = rate as f64;
                     if r.is_finite() {
                         self.speculative_history.push(r);
+                        if r > 0.0 || llm.mtp_draft_generated > 0 {
+                            self.llm_mtp_peak = self.llm_mtp_peak.max(r);
+                            self.llm_mtp_samples_15m.push_back((now, r));
+                            self.llm_mtp_all_time_sum += r;
+                            self.llm_mtp_all_time_count += 1;
+
+                            let cutoff_15m = now.checked_sub(std::time::Duration::from_secs(900)).unwrap_or(now);
+                            while let Some((t, _)) = self.llm_mtp_samples_15m.front() {
+                                if *t < cutoff_15m {
+                                    self.llm_mtp_samples_15m.pop_front();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
 

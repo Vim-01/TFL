@@ -609,11 +609,24 @@ impl<'a> DashboardView<'a> {
             return;
         }
 
-        let avg_1m = self.app.llm_tps_avg_1m();
-        let avg_15m = self.app.llm_tps_avg_15m();
-        let avg_all = self.app.llm_tps_avg_all_time();
-        let prefill_tps = llm.map(|l| l.current_prefill_tps).unwrap_or(0.0);
-        let peak_tps = llm.map(|l| l.peak_decode_tps).unwrap_or(0.0).max(self.app.decode_tps_history.max() as f32);
+        let dec_cur = dec_tps;
+        let dec_1m = self.app.llm_decode_avg_1m();
+        let dec_15m = self.app.llm_decode_avg_15m();
+        let dec_all = self.app.llm_decode_avg_all();
+        let dec_pk = self.app.llm_decode_peak();
+
+        let prf_cur = llm.map(|l| l.current_prefill_tps).unwrap_or(0.0) as f64;
+        let prf_1m = self.app.llm_prefill_avg_1m();
+        let prf_15m = self.app.llm_prefill_avg_15m();
+        let prf_all = self.app.llm_prefill_avg_all();
+        let prf_pk = self.app.llm_prefill_peak();
+
+        let mtp_rate_opt = llm.and_then(|l| l.speculative_acceptance_rate);
+        let mtp_cur = mtp_rate_opt.map(|r| r as f64);
+        let mtp_1m = self.app.llm_mtp_avg_1m();
+        let mtp_15m = self.app.llm_mtp_avg_15m();
+        let mtp_all = self.app.llm_mtp_avg_all();
+        let mtp_pk = self.app.llm_mtp_peak();
 
         // Divide LLM panel: Left 2/3 (Model Info, Gauges & Braille Graph); Right 1/3 (Throughput Averages & Stats)
         let is_wide = inner.width >= 50;
@@ -663,7 +676,6 @@ impl<'a> DashboardView<'a> {
         buf.set_line(left_chunks[1].x, left_chunks[1].y, &l2, left_chunks[1].width);
 
         // MTP Acceptance Validation Section
-        let mtp_rate_opt = llm.and_then(|l| l.speculative_acceptance_rate);
         let mtp_acc = llm.map(|l| l.mtp_draft_accepted).unwrap_or(0);
         let mtp_gen = llm.map(|l| l.mtp_draft_generated).unwrap_or(0);
         let mtp_mean = llm.and_then(|l| l.mtp_mean_len).unwrap_or(0.0);
@@ -714,54 +726,219 @@ impl<'a> DashboardView<'a> {
                 .render(left_chunks[4], buf);
         }
 
-        // --- Right (1/3): Dedicated Speed & Telemetry Card (Current, 1m, 15m, all-time, Peak, Prefill) ---
+        // --- Right (1/3): Dedicated Speed & Telemetry Card (Current, 1m, 15m, all-time, Peak for Decode, Prefill, MTP) ---
         if let Some(right_area) = right_area_opt {
             let speed_block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Plain)
                 .border_style(Style::default().fg(theme.fg_dim))
                 .title(Line::from(vec![
-                    Span::styled(" Speed (t/s) ", Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
+                    Span::styled(" Speed & MTP ", Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
                 ]));
 
             let speed_inner = speed_block.inner(right_area);
             speed_block.render(right_area, buf);
 
             if speed_inner.height >= 4 && speed_inner.width >= 10 {
-                let stats_lines = [
-                    Line::from(vec![
-                        Span::styled("Current:  ", Style::default().fg(theme.fg_dim)),
-                        Span::styled(format!("{dec_tps:>5.1} "), Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
-                        Span::styled("t/s", Style::default().fg(theme.fg_dim)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Avg 1m:   ", Style::default().fg(theme.fg_dim)),
-                        Span::styled(format!("{avg_1m:>5.1} "), Style::default().fg(theme.border_active).add_modifier(Modifier::BOLD)),
-                        Span::styled("t/s", Style::default().fg(theme.fg_dim)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Avg 15m:  ", Style::default().fg(theme.fg_dim)),
-                        Span::styled(format!("{avg_15m:>5.1} "), Style::default().fg(theme.fg)),
-                        Span::styled("t/s", Style::default().fg(theme.fg_dim)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("All-time: ", Style::default().fg(theme.fg_dim)),
-                        Span::styled(format!("{avg_all:>5.1} "), Style::default().fg(theme.fg)),
-                        Span::styled("t/s", Style::default().fg(theme.fg_dim)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Peak:     ", Style::default().fg(theme.fg_dim)),
-                        Span::styled(format!("{peak_tps:>5.1} "), Style::default().fg(theme.temp_warm)),
-                        Span::styled("t/s", Style::default().fg(theme.fg_dim)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Prefill:  ", Style::default().fg(theme.fg_dim)),
-                        Span::styled(format!("{prefill_tps:>5.0} "), Style::default().fg(theme.temp_cool)),
-                        Span::styled("t/s", Style::default().fg(theme.fg_dim)),
-                    ]),
-                ];
+                let width = speed_inner.width;
+                let height = speed_inner.height;
 
-                for (idx, line) in stats_lines.iter().enumerate() {
+                let mut lines: Vec<Line> = Vec::new();
+
+                let mtp_color = match mtp_cur {
+                    Some(r) if r >= 60.0 => theme.temp_cool,
+                    Some(r) if r >= 40.0 => theme.temp_warm,
+                    Some(_) => theme.temp_hot,
+                    None => theme.fg_dim,
+                };
+
+                let mtp_cur_str = mtp_cur.map(|r| format!("{r:.1}%")).unwrap_or_else(|| "--%".to_string());
+                let mtp_pk_str = if mtp_pk > 0.0 { format!("{mtp_pk:.1}%") } else { "--%".to_string() };
+                let mtp_1m_str = if mtp_1m > 0.0 { format!("{mtp_1m:.1}%") } else { "--%".to_string() };
+                let mtp_15m_str = if mtp_15m > 0.0 { format!("{mtp_15m:.1}%") } else { "--%".to_string() };
+                let mtp_all_str = if mtp_all > 0.0 { format!("{mtp_all:.1}%") } else { "--%".to_string() };
+
+                let prf_cur_str = format!("{prf_cur:.0}");
+                let prf_pk_str = if prf_pk > 0.0 { format!("{prf_pk:.0}") } else { "--".to_string() };
+                let prf_1m_str = if prf_1m > 0.0 { format!("{prf_1m:.0}") } else { "--".to_string() };
+                let prf_15m_str = if prf_15m > 0.0 { format!("{prf_15m:.0}") } else { "--".to_string() };
+                let prf_all_str = if prf_all > 0.0 { format!("{prf_all:.0}") } else { "--".to_string() };
+
+                if height >= 9 {
+                    let show_spacers = height >= 11;
+                    // --- 1. Decode ---
+                    if width >= 28 {
+                        lines.push(Line::from(vec![
+                            Span::styled("Decode:  ", Style::default().fg(theme.spark_tps).add_modifier(Modifier::BOLD)),
+                            Span::styled(format!("{dec_cur:>5.1} "), Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
+                            Span::styled("t/s ", Style::default().fg(theme.fg_dim)),
+                            Span::styled("(Pk: ", Style::default().fg(theme.fg_dim)),
+                            Span::styled(format!("{dec_pk:>4.1}"), Style::default().fg(theme.temp_warm).add_modifier(Modifier::BOLD)),
+                            Span::styled(")", Style::default().fg(theme.fg_dim)),
+                        ]));
+                        lines.push(Line::from(vec![
+                            Span::styled("  Avg 1m: ", Style::default().fg(theme.fg_dim)),
+                            Span::styled(format!("{dec_1m:>4.1} "), Style::default().fg(theme.border_active).add_modifier(Modifier::BOLD)),
+                            Span::styled(" 15m: ", Style::default().fg(theme.fg_dim)),
+                            Span::styled(format!("{dec_15m:>4.1}"), Style::default().fg(theme.fg)),
+                        ]));
+                        lines.push(Line::from(vec![
+                            Span::styled("  All-time: ", Style::default().fg(theme.fg_dim)),
+                            Span::styled(format!("{dec_all:>4.1} "), Style::default().fg(theme.fg)),
+                            Span::styled("t/s", Style::default().fg(theme.fg_dim)),
+                        ]));
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::styled("Dec: ", Style::default().fg(theme.spark_tps).add_modifier(Modifier::BOLD)),
+                            Span::styled(format!("{dec_cur:.1} "), Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
+                            Span::styled("Pk:", Style::default().fg(theme.fg_dim)),
+                            Span::styled(format!("{dec_pk:.1}"), Style::default().fg(theme.temp_warm)),
+                        ]));
+                        lines.push(Line::from(vec![
+                            Span::styled(" 1m:", Style::default().fg(theme.fg_dim)),
+                            Span::styled(format!("{dec_1m:.1} "), Style::default().fg(theme.border_active)),
+                            Span::styled("15m:", Style::default().fg(theme.fg_dim)),
+                            Span::styled(format!("{dec_15m:.1}"), Style::default().fg(theme.fg)),
+                        ]));
+                        lines.push(Line::from(vec![
+                            Span::styled(" All:", Style::default().fg(theme.fg_dim)),
+                            Span::styled(format!("{dec_all:.1} t/s"), Style::default().fg(theme.fg)),
+                        ]));
+                    }
+
+                    if show_spacers {
+                        lines.push(Line::from(""));
+                    }
+
+                    // --- 2. Prefill ---
+                    if width >= 28 {
+                        lines.push(Line::from(vec![
+                            Span::styled("Prefill: ", Style::default().fg(theme.temp_cool).add_modifier(Modifier::BOLD)),
+                            Span::styled(format!("{prf_cur_str:>5} "), Style::default().fg(theme.temp_cool).add_modifier(Modifier::BOLD)),
+                            Span::styled("t/s ", Style::default().fg(theme.fg_dim)),
+                            Span::styled("(Pk: ", Style::default().fg(theme.fg_dim)),
+                            Span::styled(format!("{prf_pk_str:>4}"), Style::default().fg(theme.temp_warm).add_modifier(Modifier::BOLD)),
+                            Span::styled(")", Style::default().fg(theme.fg_dim)),
+                        ]));
+                        lines.push(Line::from(vec![
+                            Span::styled("  Avg 1m: ", Style::default().fg(theme.fg_dim)),
+                            Span::styled(format!("{prf_1m_str:>4} "), Style::default().fg(theme.temp_cool)),
+                            Span::styled(" 15m: ", Style::default().fg(theme.fg_dim)),
+                            Span::styled(format!("{prf_15m_str:>4}"), Style::default().fg(theme.fg)),
+                        ]));
+                        lines.push(Line::from(vec![
+                            Span::styled("  All-time: ", Style::default().fg(theme.fg_dim)),
+                            Span::styled(format!("{prf_all_str:>4} "), Style::default().fg(theme.fg)),
+                            Span::styled("t/s", Style::default().fg(theme.fg_dim)),
+                        ]));
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::styled("Prf: ", Style::default().fg(theme.temp_cool).add_modifier(Modifier::BOLD)),
+                            Span::styled(format!("{prf_cur_str} "), Style::default().fg(theme.temp_cool).add_modifier(Modifier::BOLD)),
+                            Span::styled("Pk:", Style::default().fg(theme.fg_dim)),
+                            Span::styled(prf_pk_str.clone(), Style::default().fg(theme.temp_warm)),
+                        ]));
+                        lines.push(Line::from(vec![
+                            Span::styled(" 1m:", Style::default().fg(theme.fg_dim)),
+                            Span::styled(format!("{prf_1m_str} "), Style::default().fg(theme.temp_cool)),
+                            Span::styled("15m:", Style::default().fg(theme.fg_dim)),
+                            Span::styled(prf_15m_str.clone(), Style::default().fg(theme.fg)),
+                        ]));
+                        lines.push(Line::from(vec![
+                            Span::styled(" All:", Style::default().fg(theme.fg_dim)),
+                            Span::styled(format!("{prf_all_str} t/s"), Style::default().fg(theme.fg)),
+                        ]));
+                    }
+
+                    if show_spacers {
+                        lines.push(Line::from(""));
+                    }
+
+                    // --- 3. MTP Acceptance ---
+                    if width >= 28 {
+                        lines.push(Line::from(vec![
+                            Span::styled("MTP Acc: ", Style::default().fg(theme.border_active).add_modifier(Modifier::BOLD)),
+                            Span::styled(format!("{mtp_cur_str:>6} "), Style::default().fg(mtp_color).add_modifier(Modifier::BOLD)),
+                            Span::styled("(Pk: ", Style::default().fg(theme.fg_dim)),
+                            Span::styled(format!("{mtp_pk_str:>5}"), Style::default().fg(theme.temp_warm).add_modifier(Modifier::BOLD)),
+                            Span::styled(")", Style::default().fg(theme.fg_dim)),
+                        ]));
+                        lines.push(Line::from(vec![
+                            Span::styled("  Avg 1m: ", Style::default().fg(theme.fg_dim)),
+                            Span::styled(format!("{mtp_1m_str:>5} "), Style::default().fg(theme.border_active)),
+                            Span::styled(" 15m: ", Style::default().fg(theme.fg_dim)),
+                            Span::styled(format!("{mtp_15m_str:>5}"), Style::default().fg(theme.fg)),
+                        ]));
+                        lines.push(Line::from(vec![
+                            Span::styled("  All-time: ", Style::default().fg(theme.fg_dim)),
+                            Span::styled(format!("{mtp_all_str:>5}"), Style::default().fg(theme.fg)),
+                        ]));
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::styled("MTP: ", Style::default().fg(theme.border_active).add_modifier(Modifier::BOLD)),
+                            Span::styled(format!("{mtp_cur_str} "), Style::default().fg(mtp_color).add_modifier(Modifier::BOLD)),
+                            Span::styled("Pk:", Style::default().fg(theme.fg_dim)),
+                            Span::styled(mtp_pk_str.clone(), Style::default().fg(theme.temp_warm)),
+                        ]));
+                        lines.push(Line::from(vec![
+                            Span::styled(" 1m:", Style::default().fg(theme.fg_dim)),
+                            Span::styled(format!("{mtp_1m_str} "), Style::default().fg(theme.border_active)),
+                            Span::styled("15m:", Style::default().fg(theme.fg_dim)),
+                            Span::styled(mtp_15m_str.clone(), Style::default().fg(theme.fg)),
+                        ]));
+                        lines.push(Line::from(vec![
+                            Span::styled(" All:", Style::default().fg(theme.fg_dim)),
+                            Span::styled(mtp_all_str, Style::default().fg(theme.fg)),
+                        ]));
+                    }
+                } else {
+                    // Compact 2-line per metric layout (fits in 6 rows)
+                    lines.push(Line::from(vec![
+                        Span::styled("Decode:  ", Style::default().fg(theme.spark_tps).add_modifier(Modifier::BOLD)),
+                        Span::styled(format!("{dec_cur:>4.1} "), Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
+                        Span::styled("t/s ", Style::default().fg(theme.fg_dim)),
+                        Span::styled(format!("[Pk: {dec_pk:.1}]"), Style::default().fg(theme.temp_warm)),
+                    ]));
+                    lines.push(Line::from(vec![
+                        Span::styled(" 1m:", Style::default().fg(theme.fg_dim)),
+                        Span::styled(format!("{dec_1m:>4.1} "), Style::default().fg(theme.border_active)),
+                        Span::styled("15m:", Style::default().fg(theme.fg_dim)),
+                        Span::styled(format!("{dec_15m:>4.1} "), Style::default().fg(theme.fg)),
+                        Span::styled("All:", Style::default().fg(theme.fg_dim)),
+                        Span::styled(format!("{dec_all:>4.1}"), Style::default().fg(theme.fg)),
+                    ]));
+
+                    lines.push(Line::from(vec![
+                        Span::styled("Prefill: ", Style::default().fg(theme.temp_cool).add_modifier(Modifier::BOLD)),
+                        Span::styled(format!("{prf_cur_str:>4} "), Style::default().fg(theme.temp_cool).add_modifier(Modifier::BOLD)),
+                        Span::styled("t/s ", Style::default().fg(theme.fg_dim)),
+                        Span::styled(format!("[Pk: {prf_pk_str}]"), Style::default().fg(theme.temp_warm)),
+                    ]));
+                    lines.push(Line::from(vec![
+                        Span::styled(" 1m:", Style::default().fg(theme.fg_dim)),
+                        Span::styled(format!("{prf_1m_str:>4} "), Style::default().fg(theme.temp_cool)),
+                        Span::styled("15m:", Style::default().fg(theme.fg_dim)),
+                        Span::styled(format!("{prf_15m_str:>4} "), Style::default().fg(theme.fg)),
+                        Span::styled("All:", Style::default().fg(theme.fg_dim)),
+                        Span::styled(format!("{prf_all_str:>4}"), Style::default().fg(theme.fg)),
+                    ]));
+
+                    lines.push(Line::from(vec![
+                        Span::styled("MTP Acc: ", Style::default().fg(theme.border_active).add_modifier(Modifier::BOLD)),
+                        Span::styled(format!("{mtp_cur_str} "), Style::default().fg(mtp_color).add_modifier(Modifier::BOLD)),
+                        Span::styled(format!("[Pk: {mtp_pk_str}]"), Style::default().fg(theme.temp_warm)),
+                    ]));
+                    lines.push(Line::from(vec![
+                        Span::styled(" 1m:", Style::default().fg(theme.fg_dim)),
+                        Span::styled(format!("{mtp_1m_str} "), Style::default().fg(theme.border_active)),
+                        Span::styled("15m:", Style::default().fg(theme.fg_dim)),
+                        Span::styled(format!("{mtp_15m_str} "), Style::default().fg(theme.fg)),
+                        Span::styled("All:", Style::default().fg(theme.fg_dim)),
+                        Span::styled(mtp_all_str, Style::default().fg(theme.fg)),
+                    ]));
+                }
+
+                for (idx, line) in lines.iter().enumerate() {
                     let y = speed_inner.y + idx as u16;
                     if y < speed_inner.y + speed_inner.height {
                         buf.set_line(speed_inner.x, y, line, speed_inner.width);
