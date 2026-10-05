@@ -78,13 +78,7 @@ impl<'a> Widget for OptionsModal<'a> {
             ("Select Theme", self.app.theme.name.to_string()),
             (
                 "Background Mode",
-                if self.app.theme_id.is_solid() {
-                    "Solid Fill (Theme Builtin)".to_string()
-                } else if self.app.solid_background {
-                    "Solid Opaque (Override)".to_string()
-                } else {
-                    "Transparent (Terminal Default)".to_string()
-                },
+                self.app.bg_mode.name().to_string(),
             ),
             (
                 "Poll Interval",

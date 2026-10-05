@@ -91,6 +91,62 @@ impl ThemeId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BackgroundMode {
+    #[default]
+    Transparent, // 1. Preserves host terminal transparency & blur
+    ThemeTone,   // 2. Solid fill with subtle palette tone matching the theme
+    PureBlack,   // 3. Deep pure pitch black (#000000 / RGB 0, 0, 0)
+}
+
+impl BackgroundMode {
+    pub fn all() -> &'static [BackgroundMode] {
+        &[
+            BackgroundMode::Transparent,
+            BackgroundMode::ThemeTone,
+            BackgroundMode::PureBlack,
+        ]
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Transparent => "Transparent (Terminal Default)",
+            Self::ThemeTone => "Theme Tone (Subtle Palette Tint)",
+            Self::PureBlack => "Pure Black (Pitch / OLED #000000)",
+        }
+    }
+
+    pub fn next(&self) -> Self {
+        match self {
+            Self::Transparent => Self::ThemeTone,
+            Self::ThemeTone => Self::PureBlack,
+            Self::PureBlack => Self::Transparent,
+        }
+    }
+
+    pub fn prev(&self) -> Self {
+        match self {
+            Self::Transparent => Self::PureBlack,
+            Self::ThemeTone => Self::Transparent,
+            Self::PureBlack => Self::ThemeTone,
+        }
+    }
+}
+
+fn resolve_bg(id: ThemeId, bg_mode: BackgroundMode, theme_tone: Color) -> Option<Color> {
+    match bg_mode {
+        BackgroundMode::PureBlack => Some(Color::Rgb(0, 0, 0)),
+        BackgroundMode::ThemeTone => Some(theme_tone),
+        BackgroundMode::Transparent => {
+            if id.is_solid() {
+                Some(theme_tone)
+            } else {
+                None
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Theme {
     pub id: ThemeId,
@@ -120,7 +176,7 @@ pub struct Theme {
 }
 
 impl Theme {
-    pub fn get(id: ThemeId, force_solid_bg: bool) -> Self {
+    pub fn get(id: ThemeId, bg_mode: BackgroundMode) -> Self {
         match id {
             // ================================================================
             // TRANSPARENT THEME 1: Btop Neon (Cyberpunk Violet & Cyan)
@@ -128,7 +184,7 @@ impl Theme {
             ThemeId::BtopNeon => Self {
                 id,
                 name: id.name(),
-                bg: if force_solid_bg { Some(Color::Rgb(15, 17, 26)) } else { None },
+                bg: resolve_bg(id, bg_mode, Color::Rgb(15, 17, 26)),
                 fg: Color::Rgb(245, 248, 255),          // Crisp luminous white
                 fg_dim: Color::Rgb(175, 190, 215),      // High-contrast readable silver
                 fg_highlight: Color::Rgb(255, 225, 90),  // Bright gold
@@ -158,7 +214,7 @@ impl Theme {
             ThemeId::CatppuccinMocha => Self {
                 id,
                 name: id.name(),
-                bg: if force_solid_bg { Some(Color::Rgb(30, 30, 46)) } else { None },
+                bg: resolve_bg(id, bg_mode, Color::Rgb(30, 30, 46)),
                 fg: Color::Rgb(205, 214, 244),          // Text #cdd6f4
                 fg_dim: Color::Rgb(166, 173, 200),      // Subtext0 #a6adc8
                 fg_highlight: Color::Rgb(249, 226, 175),// Yellow #f9e2af
@@ -188,7 +244,7 @@ impl Theme {
             ThemeId::TokyoNight => Self {
                 id,
                 name: id.name(),
-                bg: if force_solid_bg { Some(Color::Rgb(26, 27, 38)) } else { None },
+                bg: resolve_bg(id, bg_mode, Color::Rgb(26, 27, 38)),
                 fg: Color::Rgb(192, 202, 245),          // #c0caf5
                 fg_dim: Color::Rgb(140, 153, 200),
                 fg_highlight: Color::Rgb(224, 175, 104),// #e0af68
@@ -218,7 +274,7 @@ impl Theme {
             ThemeId::Dracula => Self {
                 id,
                 name: id.name(),
-                bg: if force_solid_bg { Some(Color::Rgb(40, 42, 54)) } else { None },
+                bg: resolve_bg(id, bg_mode, Color::Rgb(40, 42, 54)),
                 fg: Color::Rgb(248, 248, 242),          // #f8f8f2
                 fg_dim: Color::Rgb(189, 195, 210),
                 fg_highlight: Color::Rgb(241, 250, 140),// #f1fa8c
@@ -248,7 +304,7 @@ impl Theme {
             ThemeId::GruvboxDark => Self {
                 id,
                 name: id.name(),
-                bg: if force_solid_bg { Some(Color::Rgb(40, 40, 40)) } else { None },
+                bg: resolve_bg(id, bg_mode, Color::Rgb(40, 40, 40)),
                 fg: Color::Rgb(235, 219, 178),          // #ebdbb2
                 fg_dim: Color::Rgb(168, 153, 132),      // #a89984
                 fg_highlight: Color::Rgb(250, 189, 47), // #fabd2f
@@ -278,7 +334,7 @@ impl Theme {
             ThemeId::RosePine => Self {
                 id,
                 name: id.name(),
-                bg: if force_solid_bg { Some(Color::Rgb(25, 23, 36)) } else { None },
+                bg: resolve_bg(id, bg_mode, Color::Rgb(25, 23, 36)),
                 fg: Color::Rgb(224, 222, 244),          // #e0def4
                 fg_dim: Color::Rgb(144, 140, 170),      // #908caa
                 fg_highlight: Color::Rgb(246, 193, 119),// #f6c177
@@ -308,7 +364,7 @@ impl Theme {
             ThemeId::CyberMatrix => Self {
                 id,
                 name: id.name(),
-                bg: if force_solid_bg { Some(Color::Rgb(10, 20, 15)) } else { None },
+                bg: resolve_bg(id, bg_mode, Color::Rgb(10, 20, 15)),
                 fg: Color::Rgb(240, 255, 245),          // Light phosphor green-white
                 fg_dim: Color::Rgb(160, 215, 180),      // Mint luminous text
                 fg_highlight: Color::Rgb(255, 230, 75),  // Cyber electric yellow
@@ -333,12 +389,12 @@ impl Theme {
             },
 
             // ================================================================
-            // TRANSPARENT THEME 3: Synthwave 80s (Hot Magenta & Neon Cyan)
+            // TRANSPARENT THEME 8: Synthwave 80s (Hot Magenta & Neon Cyan)
             // ================================================================
             ThemeId::Synthwave => Self {
                 id,
                 name: id.name(),
-                bg: if force_solid_bg { Some(Color::Rgb(20, 12, 28)) } else { None },
+                bg: resolve_bg(id, bg_mode, Color::Rgb(20, 12, 28)),
                 fg: Color::Rgb(255, 245, 255),          // Radiant pearl white
                 fg_dim: Color::Rgb(210, 180, 225),      // Luminous lavender
                 fg_highlight: Color::Rgb(255, 235, 85),  // Neon sunny yellow
@@ -363,12 +419,12 @@ impl Theme {
             },
 
             // ================================================================
-            // TRANSPARENT THEME 4: Nord Frost (Arctic Ice & Aurora)
+            // TRANSPARENT THEME 9: Nord Frost (Arctic Ice & Aurora)
             // ================================================================
             ThemeId::NordFrost => Self {
                 id,
                 name: id.name(),
-                bg: if force_solid_bg { Some(Color::Rgb(46, 52, 64)) } else { None },
+                bg: resolve_bg(id, bg_mode, Color::Rgb(46, 52, 64)),
                 fg: Color::Rgb(240, 244, 250),          // Snow storm white
                 fg_dim: Color::Rgb(180, 195, 215),      // Frost silver
                 fg_highlight: Color::Rgb(235, 203, 139), // Aurora gold
@@ -393,12 +449,12 @@ impl Theme {
             },
 
             // ================================================================
-            // TRANSPARENT THEME 5: Solarized Glow (Teal & Golden Amber)
+            // TRANSPARENT THEME 10: Solarized Glow (Teal & Golden Amber)
             // ================================================================
             ThemeId::SolarizedGlow => Self {
                 id,
                 name: id.name(),
-                bg: if force_solid_bg { Some(Color::Rgb(0, 43, 54)) } else { None },
+                bg: resolve_bg(id, bg_mode, Color::Rgb(0, 43, 54)),
                 fg: Color::Rgb(253, 246, 227),          // Solarized base3 ivory
                 fg_dim: Color::Rgb(180, 195, 195),      // Luminous base1
                 fg_highlight: Color::Rgb(215, 165, 20),  // Solarized yellow
@@ -428,7 +484,7 @@ impl Theme {
             ThemeId::MidnightOled => Self {
                 id,
                 name: id.name(),
-                bg: Some(Color::Rgb(12, 14, 20)),       // Always solid opaque black
+                bg: if bg_mode == BackgroundMode::PureBlack { Some(Color::Rgb(0, 0, 0)) } else { Some(Color::Rgb(12, 14, 20)) },
                 fg: Color::Rgb(245, 248, 255),
                 fg_dim: Color::Rgb(160, 175, 200),
                 fg_highlight: Color::Rgb(255, 220, 85),
@@ -458,7 +514,7 @@ impl Theme {
             ThemeId::LightPaper => Self {
                 id,
                 name: id.name(),
-                bg: Some(Color::Rgb(246, 248, 252)),     // Always solid opaque ivory
+                bg: if bg_mode == BackgroundMode::PureBlack { Some(Color::Rgb(0, 0, 0)) } else { Some(Color::Rgb(246, 248, 252)) },
                 fg: Color::Rgb(20, 24, 35),              // Dark ink
                 fg_dim: Color::Rgb(95, 105, 125),        // Crisp readable graphite
                 fg_highlight: Color::Rgb(180, 70, 0),    // Dark amber

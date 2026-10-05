@@ -1,5 +1,5 @@
 use crate::model::{CpuMetrics, GpuMetrics, HistoryRingBuffer, LlmMetrics, MetricUpdate};
-use crate::theme::{Theme, ThemeId};
+use crate::theme::{BackgroundMode, Theme, ThemeId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveTab {
@@ -54,6 +54,11 @@ pub struct App {
     pub cpu_all_time_sum: f64,
     pub cpu_all_time_count: u64,
 
+    // Rolling LLM decode TPS averages (1 min, 15 min, and all-time since start)
+    pub llm_tps_samples_15m: std::collections::VecDeque<(std::time::Instant, f64)>,
+    pub llm_tps_all_time_sum: f64,
+    pub llm_tps_all_time_count: u64,
+
     pub active_tab: ActiveTab,
     pub is_paused: bool,
     pub should_quit: bool,
@@ -64,7 +69,7 @@ pub struct App {
     // Theming and Options State
     pub theme_id: ThemeId,
     pub theme: Theme,
-    pub solid_background: bool,
+    pub bg_mode: BackgroundMode,
     pub options_menu_open: bool,
     pub options_menu_index: usize,
     pub poll_interval: Arc<AtomicU64>,
@@ -80,8 +85,8 @@ impl App {
     pub fn with_poll_interval(poll_interval: Arc<AtomicU64>) -> Self {
         let theme_id = ThemeId::BtopNeon;
         // Default to transparent background: preserves host terminal's transparency / blur
-        let solid_background = false;
-        let theme = Theme::get(theme_id, solid_background);
+        let bg_mode = BackgroundMode::Transparent;
+        let theme = Theme::get(theme_id, bg_mode);
 
         Self {
             cpu: None,
@@ -97,6 +102,9 @@ impl App {
             cpu_samples_15m: std::collections::VecDeque::new(),
             cpu_all_time_sum: 0.0,
             cpu_all_time_count: 0,
+            llm_tps_samples_15m: std::collections::VecDeque::new(),
+            llm_tps_all_time_sum: 0.0,
+            llm_tps_all_time_count: 0,
             active_tab: ActiveTab::Dashboard,
             is_paused: false,
             should_quit: false,
@@ -105,7 +113,7 @@ impl App {
             selected_process_index: 0,
             theme_id,
             theme,
-            solid_background,
+            bg_mode,
             options_menu_open: false,
             options_menu_index: 0,
             poll_interval,
@@ -152,6 +160,42 @@ impl App {
             self.cpu_all_time_sum / self.cpu_all_time_count as f64
         } else {
             self.cpu.as_ref().map(|c| c.global_usage_percent as f64).unwrap_or(0.0)
+        }
+    }
+
+    pub fn llm_tps_avg_1m(&self) -> f64 {
+        let now = std::time::Instant::now();
+        let cutoff_1m = now.checked_sub(std::time::Duration::from_secs(60)).unwrap_or(now);
+        let mut sum = 0.0;
+        let mut count = 0;
+        for (t, val) in self.llm_tps_samples_15m.iter().rev() {
+            if *t >= cutoff_1m {
+                sum += *val;
+                count += 1;
+            } else {
+                break;
+            }
+        }
+        if count > 0 {
+            sum / count as f64
+        } else {
+            self.llm.as_ref().map(|l| l.current_decode_tps as f64).unwrap_or(0.0)
+        }
+    }
+
+    pub fn llm_tps_avg_15m(&self) -> f64 {
+        if self.llm_tps_samples_15m.is_empty() {
+            return self.llm.as_ref().map(|l| l.current_decode_tps as f64).unwrap_or(0.0);
+        }
+        let sum: f64 = self.llm_tps_samples_15m.iter().map(|(_, v)| *v).sum();
+        sum / self.llm_tps_samples_15m.len() as f64
+    }
+
+    pub fn llm_tps_avg_all_time(&self) -> f64 {
+        if self.llm_tps_all_time_count > 0 {
+            self.llm_tps_all_time_sum / self.llm_tps_all_time_count as f64
+        } else {
+            self.llm.as_ref().map(|l| l.current_decode_tps as f64).unwrap_or(0.0)
         }
     }
 
@@ -218,6 +262,32 @@ impl App {
                 if prf_tps.is_finite() {
                     self.prefill_tps_history.push(prf_tps);
                 }
+
+                // Sample active token generation rate for 1m / 15m / all-time averages
+                let active_tps = if llm.active_slots > 0 && dec_tps > 0.0 {
+                    dec_tps
+                } else if llm.active_slots > 0 && llm.current_decode_tps > 0.0 {
+                    llm.current_decode_tps as f64
+                } else {
+                    0.0
+                };
+
+                if active_tps > 0.0 {
+                    let now = std::time::Instant::now();
+                    self.llm_tps_samples_15m.push_back((now, active_tps));
+                    self.llm_tps_all_time_sum += active_tps;
+                    self.llm_tps_all_time_count += 1;
+
+                    let cutoff_15m = now.checked_sub(std::time::Duration::from_secs(900)).unwrap_or(now);
+                    while let Some((t, _)) = self.llm_tps_samples_15m.front() {
+                        if *t < cutoff_15m {
+                            self.llm_tps_samples_15m.pop_front();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+
                 if let Some(rate) = llm.speculative_acceptance_rate {
                     let r = rate as f64;
                     if r.is_finite() {
@@ -238,7 +308,7 @@ impl App {
 
     pub fn set_theme(&mut self, id: ThemeId) {
         self.theme_id = id;
-        self.theme = Theme::get(id, self.solid_background);
+        self.theme = Theme::get(id, self.bg_mode);
     }
 
     pub fn cycle_theme_next(&mut self) {
@@ -249,9 +319,18 @@ impl App {
         self.set_theme(self.theme_id.prev());
     }
 
+    pub fn cycle_bg_mode_next(&mut self) {
+        self.bg_mode = self.bg_mode.next();
+        self.theme = Theme::get(self.theme_id, self.bg_mode);
+    }
+
+    pub fn cycle_bg_mode_prev(&mut self) {
+        self.bg_mode = self.bg_mode.prev();
+        self.theme = Theme::get(self.theme_id, self.bg_mode);
+    }
+
     pub fn toggle_solid_background(&mut self) {
-        self.solid_background = !self.solid_background;
-        self.theme = Theme::get(self.theme_id, self.solid_background);
+        self.cycle_bg_mode_next();
     }
 
     pub fn toggle_options_menu(&mut self) {
@@ -273,7 +352,7 @@ impl App {
     pub fn on_menu_left(&mut self) {
         match self.options_menu_index {
             0 => self.cycle_theme_prev(),
-            1 => self.toggle_solid_background(),
+            1 => self.cycle_bg_mode_prev(),
             2 => {
                 let current = self.poll_interval_ms();
                 const PRESETS: [u64; 10] = [100, 200, 250, 500, 750, 1000, 1500, 2000, 3000, 5000];
@@ -296,7 +375,7 @@ impl App {
     pub fn on_menu_right_or_enter(&mut self) {
         match self.options_menu_index {
             0 => self.cycle_theme_next(),
-            1 => self.toggle_solid_background(),
+            1 => self.cycle_bg_mode_next(),
             2 => {
                 let current = self.poll_interval_ms();
                 const PRESETS: [u64; 10] = [100, 200, 250, 500, 750, 1000, 1500, 2000, 3000, 5000];

@@ -609,16 +609,36 @@ impl<'a> DashboardView<'a> {
             return;
         }
 
-        let chunks = Layout::default()
+        let avg_1m = self.app.llm_tps_avg_1m();
+        let avg_15m = self.app.llm_tps_avg_15m();
+        let avg_all = self.app.llm_tps_avg_all_time();
+        let prefill_tps = llm.map(|l| l.current_prefill_tps).unwrap_or(0.0);
+        let peak_tps = llm.map(|l| l.peak_decode_tps).unwrap_or(0.0).max(self.app.decode_tps_history.max() as f32);
+
+        // Divide LLM panel: Left 2/3 (Model Info, Gauges & Braille Graph); Right 1/3 (Throughput Averages & Stats)
+        let is_wide = inner.width >= 50;
+        let (left_area, right_area_opt) = if is_wide {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .spacing(1)
+                .constraints([Constraint::Ratio(2, 3), Constraint::Ratio(1, 3)])
+                .split(inner);
+            (cols[0], Some(cols[1]))
+        } else {
+            (inner, None)
+        };
+
+        // --- Left (2/3): Engine Specs, MTP/KV Gauges & Braille History Waveform ---
+        let left_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1), // Engine, Quant, Cache KV
                 Constraint::Length(1), // Speculative Draft Model
                 Constraint::Length(2), // MTP Acceptance Validation Progress Bar
                 Constraint::Length(2), // KV Cache Pool Gauge
-                Constraint::Min(2),    // Throughput Stats & Mini Braille Graph (stretching full width)
+                Constraint::Min(2),    // Mini Braille Graph of Throughput History
             ])
-            .split(inner);
+            .split(left_area);
 
         let engine = llm.map(|l| l.engine_name.as_str()).unwrap_or("llama.cpp");
         let cache_k = llm.map(|l| l.cache_type_k.as_str()).unwrap_or("f16");
@@ -628,10 +648,10 @@ impl<'a> DashboardView<'a> {
             Span::styled(engine, Style::default().fg(theme.border_active).add_modifier(Modifier::BOLD)),
             Span::styled("  Quant: ", Style::default().fg(theme.fg_dim)),
             Span::styled(quant, Style::default().fg(theme.fg_highlight)),
-            Span::styled("  Cache KV: ", Style::default().fg(theme.fg_dim)),
+            Span::styled("  KV: ", Style::default().fg(theme.fg_dim)),
             Span::styled(format!("K:{cache_k} V:{cache_v}"), Style::default().fg(theme.fg)),
         ]);
-        buf.set_line(chunks[0].x, chunks[0].y, &l1, chunks[0].width);
+        buf.set_line(left_chunks[0].x, left_chunks[0].y, &l1, left_chunks[0].width);
 
         let draft_model = llm.and_then(|l| l.speculative_draft_model.as_deref()).unwrap_or("None");
         let draft_type = llm.and_then(|l| l.speculative_type.as_deref()).unwrap_or("None");
@@ -640,7 +660,7 @@ impl<'a> DashboardView<'a> {
             Span::styled(format!("{draft_type} "), Style::default().fg(theme.fg_highlight)),
             Span::styled(format!("({draft_model})"), Style::default().fg(theme.fg_dim)),
         ]);
-        buf.set_line(chunks[1].x, chunks[1].y, &l2, chunks[1].width);
+        buf.set_line(left_chunks[1].x, left_chunks[1].y, &l2, left_chunks[1].width);
 
         // MTP Acceptance Validation Section
         let mtp_rate_opt = llm.and_then(|l| l.speculative_acceptance_rate);
@@ -667,7 +687,7 @@ impl<'a> DashboardView<'a> {
             .gauge_style(Style::default().fg(mtp_color).bg(theme.bar_track))
             .percent(mtp_pct)
             .label(format!("{mtp_pct}%"))
-            .render(chunks[2], buf);
+            .render(left_chunks[2], buf);
 
         // KV Cache Pool Gauge
         let kv_pool_pct = llm.map(|l| l.kv_cache_pool_percent).unwrap_or(0.0);
@@ -681,36 +701,73 @@ impl<'a> DashboardView<'a> {
             .gauge_style(Style::default().fg(theme.border_active).bg(theme.bar_track))
             .percent(kv_pool_pct.round() as u16)
             .label(gauge_label)
-            .render(chunks[3], buf);
+            .render(left_chunks[3], buf);
 
-        // Throughput & Live Token Generation Mini-Graph (stretches 100% horizontally - User Request #3)
-        if chunks[4].height >= 2 {
-            let spark_layout = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(1), Constraint::Min(1)])
-                .split(chunks[4]);
-
-            let prefill_tps = llm.map(|l| l.current_prefill_tps).unwrap_or(0.0);
-            let peak_tps = llm.map(|l| l.peak_decode_tps).unwrap_or(0.0).max(self.app.decode_tps_history.max() as f32);
-
-            let tps_line = Line::from(vec![
-                Span::styled("Decode: ", Style::default().fg(theme.fg_dim)),
-                Span::styled(format!("{dec_tps:.1} t/s  "), Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
-                Span::styled("Prefill: ", Style::default().fg(theme.fg_dim)),
-                Span::styled(format!("{prefill_tps:.0} t/s  "), Style::default().fg(theme.temp_cool)),
-                Span::styled("Peak: ", Style::default().fg(theme.fg_dim)),
-                Span::styled(format!("{peak_tps:.1} t/s"), Style::default().fg(theme.fg_highlight)),
-            ]);
-            buf.set_line(spark_layout[0].x, spark_layout[0].y, &tps_line, spark_layout[0].width);
-
-            // Mini 2D Braille Canvas spanning the FULL horizontal space with Green->Red gradient
+        // Live Token Generation Waveform (2D Braille Canvas)
+        if left_chunks[4].height >= 1 {
             let tps_hist = self.app.decode_tps_history.as_vec();
             let max_val = self.app.decode_tps_history.max().max(50.0);
             BrailleCanvas::new(&tps_hist)
                 .max(max_val)
                 .single_color(theme.spark_tps)
                 .baseline_color(theme.bar_track)
-                .render(spark_layout[1], buf);
+                .render(left_chunks[4], buf);
+        }
+
+        // --- Right (1/3): Dedicated Speed & Telemetry Card (Current, 1m, 15m, all-time, Peak, Prefill) ---
+        if let Some(right_area) = right_area_opt {
+            let speed_block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Plain)
+                .border_style(Style::default().fg(theme.fg_dim))
+                .title(Line::from(vec![
+                    Span::styled(" Speed (t/s) ", Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
+                ]));
+
+            let speed_inner = speed_block.inner(right_area);
+            speed_block.render(right_area, buf);
+
+            if speed_inner.height >= 4 && speed_inner.width >= 10 {
+                let stats_lines = [
+                    Line::from(vec![
+                        Span::styled("Current:  ", Style::default().fg(theme.fg_dim)),
+                        Span::styled(format!("{dec_tps:>5.1} "), Style::default().fg(theme.fg_highlight).add_modifier(Modifier::BOLD)),
+                        Span::styled("t/s", Style::default().fg(theme.fg_dim)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Avg 1m:   ", Style::default().fg(theme.fg_dim)),
+                        Span::styled(format!("{avg_1m:>5.1} "), Style::default().fg(theme.border_active).add_modifier(Modifier::BOLD)),
+                        Span::styled("t/s", Style::default().fg(theme.fg_dim)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Avg 15m:  ", Style::default().fg(theme.fg_dim)),
+                        Span::styled(format!("{avg_15m:>5.1} "), Style::default().fg(theme.fg)),
+                        Span::styled("t/s", Style::default().fg(theme.fg_dim)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("All-time: ", Style::default().fg(theme.fg_dim)),
+                        Span::styled(format!("{avg_all:>5.1} "), Style::default().fg(theme.fg)),
+                        Span::styled("t/s", Style::default().fg(theme.fg_dim)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Peak:     ", Style::default().fg(theme.fg_dim)),
+                        Span::styled(format!("{peak_tps:>5.1} "), Style::default().fg(theme.temp_warm)),
+                        Span::styled("t/s", Style::default().fg(theme.fg_dim)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Prefill:  ", Style::default().fg(theme.fg_dim)),
+                        Span::styled(format!("{prefill_tps:>5.0} "), Style::default().fg(theme.temp_cool)),
+                        Span::styled("t/s", Style::default().fg(theme.fg_dim)),
+                    ]),
+                ];
+
+                for (idx, line) in stats_lines.iter().enumerate() {
+                    let y = speed_inner.y + idx as u16;
+                    if y < speed_inner.y + speed_inner.height {
+                        buf.set_line(speed_inner.x, y, line, speed_inner.width);
+                    }
+                }
+            }
         }
     }
 
